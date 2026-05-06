@@ -10,7 +10,7 @@ import signal
 import subprocess
 import sys
 from time import sleep, time
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 DEFAULT_SLEEP: float = 0.1
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+\:\S+)\s+(\d+\.\d+\.\d+\.\d+\:\S+)$"
@@ -26,7 +26,7 @@ def is_valid_ip(ip: str) -> bool:
 
 
 def print_tcp_metrics(tcp_metrics: List[Tuple[float, str]]) -> None:
-    print_data: Dict = {"curr_session": ""}
+    print_data: Dict[str, Any] = {"curr_session": ""}
 
     def _parse_tcp_metrics(metrics: str) -> str:
         parsed_metrics = {
@@ -65,9 +65,6 @@ def print_tcp_metrics(tcp_metrics: List[Tuple[float, str]]) -> None:
             if "wscale" in line and print_data["curr_session"]:
                 line = line.replace("send ", "send:") if "send " in line else line
                 tcp_session_metrics = _parse_tcp_metrics(line)
-                if not tcp_session_metrics:
-                    continue
-
                 curr_session = print_data["curr_session"]
                 print_data[curr_session]["metrics"].append((snapshot_time, tcp_session_metrics))
 
@@ -112,8 +109,20 @@ def run() -> None:
             capture_output=True,
             text=True,
         )
-        lines = [l for l in result.stdout.splitlines() if args.ip in l or "wscale" in l]
-        tcp_metrics.append((time(), "\n".join(lines)))
+        if result.returncode != 0:
+            print(f"Error: ss failed: {result.stderr.strip()}", file=sys.stderr)
+            sys.exit(1)
+
+        # Preserve adjacency: keep session line + immediately following metrics line
+        raw_lines = result.stdout.splitlines()
+        kept: List[str] = []
+        for i, line in enumerate(raw_lines):
+            if args.ip in line:
+                kept.append(line)
+            elif "wscale" in line and i > 0 and args.ip in raw_lines[i - 1]:
+                kept.append(line)
+
+        tcp_metrics.append((time(), "\n".join(kept)))
         sleep(DEFAULT_SLEEP)
 
 
