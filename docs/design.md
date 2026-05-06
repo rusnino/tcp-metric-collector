@@ -6,12 +6,13 @@ Passive TCP performance monitoring tool. Captures kernel-level TCP metrics for a
 
 ## Requirements
 
-- Python 3.6+
+- Python 3.7+
 - Linux with `iproute2` installed
+- [uv](https://docs.astral.sh/uv/) (optional, recommended for running)
 
 ## Architecture
 
-Single-file Python 3 script. No external dependencies beyond stdlib.
+Single-file Python 3 script. No external dependencies beyond stdlib. Packaged with `uv` (`pyproject.toml`) for reproducible execution and CLI install.
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -96,7 +97,11 @@ Both `SIGINT` (Ctrl+C) and `SIGTERM` (`kill`) now trigger graceful shutdown and 
 
 `required=True` on argparse argument. Previous version used a default of `0.0.0.0` and printed a manual error message. Argparse now handles the missing-argument error.
 
-### 8. `send` metric normalization
+### 8. uv / uvx packaging
+
+`pyproject.toml` declares the project with `[project.scripts]` entrypoint so `uvx --from . tcp-metric-collector` works as a zero-install CLI. PEP 723 inline script metadata (`# /// script`) in the source file allows `uv run tcp_metrics_collector.py` without any project setup. `hatchling` used as build backend with explicit `packages` config since the module is a single flat `.py` file (not a package directory).
+
+### 9. `send` metric normalization
 
 `ss` outputs send rate as `send Xbps` (space-separated), unlike all other metrics which use `key:value`. Line with `"send "` is special-cased before regex parsing.
 

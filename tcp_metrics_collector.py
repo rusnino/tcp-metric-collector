@@ -1,3 +1,7 @@
+# /// script
+# requires-python = ">=3.7"
+# dependencies = []
+# ///
 #
 # TCP Metrics Collector
 #

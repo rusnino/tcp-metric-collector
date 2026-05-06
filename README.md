@@ -5,14 +5,23 @@ Collects TCP metrics per destination IP on Linux. Samples `ss` socket statistics
 ## Requirements
 
 - Linux with `iproute2` (`ss` command)
-- Python 3.6+
+- Python 3.7+
+- [uv](https://docs.astral.sh/uv/) (recommended) or plain Python 3
 - Run on **sender side**
 
 ## Installation
 
-Copy `tcp_metrics_collector.py` to any directory on the Linux host.
+### With uv (recommended)
 
-## Usage
+```bash
+# Run directly without install
+uv run tcp_metrics_collector.py -a <destination_ip>
+
+# Or install as CLI tool
+uvx --from . tcp-metric-collector -a <destination_ip>
+```
+
+### Plain Python
 
 ```bash
 python3 tcp_metrics_collector.py -a <destination_ip>
@@ -22,7 +31,7 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 
 **Example:**
 ```bash
-python3 tcp_metrics_collector.py -a 192.168.1.100
+uv run tcp_metrics_collector.py -a 192.168.1.100
 ```
 
 ## Output

@@ -5,11 +5,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Usage
 
 ```bash
-python tcp_metrics_collector.py -a <destination_ip>
-# Press Ctrl+C to stop and print collected metrics
+# Recommended — uv manages the environment automatically
+uv run tcp_metrics_collector.py -a <destination_ip>
+
+# As installed CLI tool via uvx
+uvx --from . tcp-metric-collector -a <destination_ip>
+
+# Plain Python fallback
+python3 tcp_metrics_collector.py -a <destination_ip>
 ```
 
-Requires Linux with `ss` command available (iproute2) and Python 3.6+. Must run on sender side.
+Requires Linux with `ss` command available (iproute2) and Python 3.7+. Must run on sender side.
+
+Project uses `uv` for environment management (`pyproject.toml`). No external dependencies — stdlib only.
 
 ## Architecture
 
@@ -39,5 +47,5 @@ Types: `feat` / `fix` / `refactor` / `docs` / `test`. Body required for all non-
 After every commit, push immediately:
 
 ```bash
-git push origin master
+git push origin main
 ```
