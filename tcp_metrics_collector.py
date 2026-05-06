@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import csv
-import io
 import ipaddress
 import json
 import re
@@ -30,6 +29,19 @@ CSV_FIELDS = ("ts", "src", "dst") + METRIC_KEYS
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+\:\S+)\s+(\d+\.\d+\.\d+\.\d+\:\S+)$"
 RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans)\:(\S+)"
 
+_verbose = False
+_debug = False
+
+
+def _log(msg: str) -> None:
+    if _verbose or _debug:
+        click.echo(f"[INFO] {msg}", file=sys.stderr)
+
+
+def _dbg(msg: str) -> None:
+    if _debug:
+        click.echo(f"[DEBUG] {msg}", file=sys.stderr)
+
 
 def is_valid_ipv4(ip: str) -> bool:
     try:
@@ -39,44 +51,60 @@ def is_valid_ipv4(ip: str) -> bool:
 
 
 def _parse_session_line(line: str) -> tuple[str, str] | None:
-    """Return (src, dst) if line is a valid non-CLOSING TCP session, else None."""
     if "tcp " not in line or "CLOSING" in line:
+        _dbg(f"session line skipped: {line.strip()!r}")
         return None
     lookup = re.findall(RE_TCP_SESSION_LOOKUP, line.strip())
     if not lookup:
+        _dbg(f"session regex no match: {line.strip()!r}")
         return None
     return lookup[0][0], lookup[0][1]
 
 
 def _parse_metrics_line(line: str) -> dict[str, int | str] | None:
-    """Return parsed metrics dict if line is a wscale metrics line, else None."""
     if "wscale" not in line:
         return None
     parsed: dict[str, int | str] = {k: 0 for k in METRIC_KEYS}
     normalized = line.replace("send ", "send:") if "send " in line else line
     for match in re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized):
         parsed[match.group(1)] = match.group(2)
+    _dbg(f"parsed metrics: {parsed}")
     return parsed
 
 
-def _collect_snapshot(ip: str) -> list[str]:
-    """Run ss and return filtered lines preserving session+metrics adjacency."""
+def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
+    """Run ss and return filtered lines. Returns None if interrupted by signal."""
     result = subprocess.run(
         ["ss", "-i", "dst", ip],
         capture_output=True,
         text=True,
     )
+
+    # Ctrl+C during subprocess sets shutdown flag AND causes ss to exit non-zero.
+    # Check flag first so we don't emit a spurious error on clean shutdown.
+    if shutdown_ref[0]:
+        _dbg("snapshot skipped — shutdown signalled during ss run")
+        return None
+
     if result.returncode != 0:
-        click.echo(f"Error: ss failed: {result.stderr.strip()}", err=True)
+        click.echo(
+            f"ERROR: ss exited with code {result.returncode}"
+            + (f": {result.stderr.strip()}" if result.stderr.strip() else ""),
+            err=True,
+        )
         sys.exit(1)
 
     raw = result.stdout.splitlines()
+    _dbg(f"ss returned {len(raw)} lines")
+
     kept: list[str] = []
     for i, line in enumerate(raw):
         if ip in line:
             kept.append(line)
         elif "wscale" in line and i > 0 and ip in raw[i - 1]:
             kept.append(line)
+
+    _dbg(f"kept {len(kept)} lines after filter")
     return kept
 
 
@@ -89,7 +117,6 @@ def _emit_record(
     out: TextIO,
     csv_writer: csv.DictWriter | None,
 ) -> None:
-    """Write one record to out in the requested format."""
     if fmt == "ndjson":
         obj = {"ts": round(ts, 3), "src": src, "dst": dst, **metrics}
         out.write(json.dumps(obj) + "\n")
@@ -100,7 +127,10 @@ def _emit_record(
         out.flush()
     else:
         label = f"{src} <--> {dst}"
-        fields = ", ".join(f'"{k}":{v!r}' if isinstance(v, str) else f'"{k}":{v}' for k, v in metrics.items())
+        fields = ", ".join(
+            f'"{k}":{v!r}' if isinstance(v, str) else f'"{k}":{v}'
+            for k, v in metrics.items()
+        )
         out.write(f"{ts:.3f} [{label}] {fields}\n")
         out.flush()
 
@@ -114,7 +144,7 @@ def _parse_snapshot(
     out: TextIO,
     csv_writer: csv.DictWriter | None,
 ) -> None:
-    """Parse one snapshot into sessions in-place. Emits immediately for ndjson/csv or --stream."""
+    found = 0
     for i, line in enumerate(lines):
         session = _parse_session_line(line)
         if session is None:
@@ -123,14 +153,18 @@ def _parse_snapshot(
         next_line = lines[i + 1] if i + 1 < len(lines) else ""
         metrics = _parse_metrics_line(next_line)
         if metrics is None:
+            _dbg(f"no metrics line after session {session}")
             continue
 
         src, dst = session
         key = f"{src}{SESSION_SEP}{dst}"
         sessions[key].append((snapshot_time, metrics))
+        found += 1
 
         if stream or fmt in ("ndjson", "csv"):
             _emit_record(snapshot_time, src, dst, metrics, fmt, out, csv_writer)
+
+    _dbg(f"snapshot parsed: {found} session(s) with metrics")
 
 
 def _print_sessions(
@@ -139,7 +173,6 @@ def _print_sessions(
     out: TextIO,
     csv_writer: csv.DictWriter | None,
 ) -> None:
-    """Print buffered results. Only used for --format text without --stream."""
     for key, records in sessions.items():
         if not records:
             continue
@@ -148,7 +181,10 @@ def _print_sessions(
         out.write("\n")
         out.write(f"======== START TCP SESSION ({label}) ========\n")
         for ts, metrics in records:
-            fields = ", ".join(f'"{k}":{v!r}' if isinstance(v, str) else f'"{k}":{v}' for k, v in metrics.items())
+            fields = ", ".join(
+                f'"{k}":{v!r}' if isinstance(v, str) else f'"{k}":{v}'
+                for k, v in metrics.items()
+            )
             out.write(f"{ts:.3f} - {fields}\n")
         out.write(f"======== END TCP SESSION ({label}) ========\n")
         out.write("\n")
@@ -169,20 +205,30 @@ def _print_sessions(
 @click.option("--format", "fmt", default="text",
               type=click.Choice(["text", "ndjson", "csv"], case_sensitive=False),
               help="Output format. ndjson and csv always stream per-record.")
+@click.option("--verbose", "-v", is_flag=True, default=False,
+              help="Log collection progress to stderr (sample count, session count).")
+@click.option("--debug", is_flag=True, default=False,
+              help="Log detailed parse events to stderr (implies --verbose).")
 def run(ip: str, duration: float | None, max_samples: int | None,
-        output: str | None, stream: bool, fmt: str) -> None:
+        output: str | None, stream: bool, fmt: str,
+        verbose: bool, debug: bool) -> None:
     """Collect TCP metrics for all sessions to a destination IPv4 address."""
+    global _verbose, _debug
+    _verbose = verbose or debug
+    _debug = debug
+
     if not is_valid_ipv4(ip):
         raise click.BadParameter(f"'{ip}' is not a valid IPv4 address.", param_hint="'-a'")
 
     sessions: dict[str, list[tuple[float, dict]]] = defaultdict(list)
-    shutdown = False
+    # Use a mutable container so signal_handler and _collect_snapshot share state
+    # without needing a nonlocal closure per call.
+    shutdown_ref: list[bool] = [False]
     sample_count = 0
     start_time = time()
 
     def signal_handler(*_) -> None:
-        nonlocal shutdown
-        shutdown = True
+        shutdown_ref[0] = True
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -197,21 +243,35 @@ def run(ip: str, duration: float | None, max_samples: int | None,
 
     try:
         click.echo(
-            f"INFO: Collecting TCP metrics every {DEFAULT_SLEEP}s. Press Ctrl+C to stop.",
+            f"INFO: Collecting TCP metrics for {ip} every {DEFAULT_SLEEP}s."
+            " Press Ctrl+C to stop.",
             file=sys.stderr,
         )
+        _log(f"format={fmt} stream={stream} duration={duration} max_samples={max_samples}"
+             f" output={output!r}")
 
-        while not shutdown:
-            lines = _collect_snapshot(ip)
+        while not shutdown_ref[0]:
+            lines = _collect_snapshot(ip, shutdown_ref)
+            if lines is None:
+                break
+
             _parse_snapshot(lines, time(), sessions, fmt, stream, out, csv_writer)
             sample_count += 1
 
+            total_records = sum(len(v) for v in sessions.values())
+            _log(f"sample {sample_count}: {len(lines)} lines, "
+                 f"{len(sessions)} session(s), {total_records} total records")
+
             if max_samples is not None and sample_count >= max_samples:
+                _log(f"--max-samples {max_samples} reached, stopping")
                 break
             if duration is not None and time() - start_time >= duration:
+                _log(f"--duration {duration}s reached, stopping")
                 break
 
             sleep(DEFAULT_SLEEP)
+
+        _log(f"collection finished: {sample_count} samples, {len(sessions)} session(s)")
 
         if fmt == "text" and not stream:
             _print_sessions(sessions, fmt, out, csv_writer)
