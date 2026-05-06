@@ -32,7 +32,7 @@ Single-file script (`tcp_metrics_collector.py`). Key functions:
 
 Collection and parsing are merged: each snapshot parsed immediately in the loop. Raw `ss` output never retained — only `(timestamp, json_str)` tuples per session.
 
-CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`
+CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`
 
 ## Commit Policy
 

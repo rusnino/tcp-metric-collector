@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import ipaddress
 import json
 import re
@@ -22,6 +24,8 @@ import click
 
 DEFAULT_SLEEP: float = 0.1
 SESSION_SEP = "|"
+METRIC_KEYS = ("cwnd", "rtt", "mss", "ssthresh", "send", "unacked", "retrans")
+CSV_FIELDS = ("ts", "src", "dst") + METRIC_KEYS
 
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+\:\S+)\s+(\d+\.\d+\.\d+\.\d+\:\S+)$"
 RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans)\:(\S+)"
@@ -34,28 +38,25 @@ def is_valid_ipv4(ip: str) -> bool:
         return False
 
 
-def _parse_session_line(line: str) -> str | None:
-    """Return session key if line is a valid non-CLOSING TCP session, else None."""
+def _parse_session_line(line: str) -> tuple[str, str] | None:
+    """Return (src, dst) if line is a valid non-CLOSING TCP session, else None."""
     if "tcp " not in line or "CLOSING" in line:
         return None
     lookup = re.findall(RE_TCP_SESSION_LOOKUP, line.strip())
     if not lookup:
         return None
-    return f"{lookup[0][0]}{SESSION_SEP}{lookup[0][1]}"
+    return lookup[0][0], lookup[0][1]
 
 
-def _parse_metrics_line(line: str) -> str | None:
-    """Return JSON metrics string if line contains wscale (ss metrics line), else None."""
+def _parse_metrics_line(line: str) -> dict[str, int | str] | None:
+    """Return parsed metrics dict if line is a wscale metrics line, else None."""
     if "wscale" not in line:
         return None
-    parsed: dict[str, int | str] = {
-        "cwnd": 0, "rtt": 0, "mss": 0, "ssthresh": 0,
-        "send": 0, "unacked": 0, "retrans": 0,
-    }
+    parsed: dict[str, int | str] = {k: 0 for k in METRIC_KEYS}
     normalized = line.replace("send ", "send:") if "send " in line else line
     for match in re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized):
         parsed[match.group(1)] = match.group(2)
-    return json.dumps(parsed)
+    return parsed
 
 
 def _collect_snapshot(ip: str) -> list[str]:
@@ -79,17 +80,44 @@ def _collect_snapshot(ip: str) -> list[str]:
     return kept
 
 
+def _emit_record(
+    ts: float,
+    src: str,
+    dst: str,
+    metrics: dict[str, int | str],
+    fmt: str,
+    out: TextIO,
+    csv_writer: csv.DictWriter | None,
+) -> None:
+    """Write one record to out in the requested format."""
+    if fmt == "ndjson":
+        obj = {"ts": round(ts, 3), "src": src, "dst": dst, **metrics}
+        out.write(json.dumps(obj) + "\n")
+        out.flush()
+    elif fmt == "csv":
+        assert csv_writer is not None
+        csv_writer.writerow({"ts": f"{ts:.3f}", "src": src, "dst": dst, **metrics})
+        out.flush()
+    else:
+        label = f"{src} <--> {dst}"
+        fields = ", ".join(f'"{k}":{v!r}' if isinstance(v, str) else f'"{k}":{v}' for k, v in metrics.items())
+        out.write(f"{ts:.3f} [{label}] {fields}\n")
+        out.flush()
+
+
 def _parse_snapshot(
     lines: list[str],
     snapshot_time: float,
-    sessions: dict[str, list[tuple[float, str]]],
+    sessions: dict[str, list[tuple[float, dict]]],
+    fmt: str,
     stream: bool,
     out: TextIO,
+    csv_writer: csv.DictWriter | None,
 ) -> None:
-    """Parse one snapshot into sessions in-place. Streams to out if stream=True."""
+    """Parse one snapshot into sessions in-place. Emits immediately for ndjson/csv or --stream."""
     for i, line in enumerate(lines):
-        session_key = _parse_session_line(line)
-        if session_key is None:
+        session = _parse_session_line(line)
+        if session is None:
             continue
 
         next_line = lines[i + 1] if i + 1 < len(lines) else ""
@@ -97,33 +125,38 @@ def _parse_snapshot(
         if metrics is None:
             continue
 
-        sessions[session_key].append((snapshot_time, metrics))
+        src, dst = session
+        key = f"{src}{SESSION_SEP}{dst}"
+        sessions[key].append((snapshot_time, metrics))
 
-        if stream:
-            label = session_key.replace(SESSION_SEP, " <--> ")
-            out.write(f"{snapshot_time:.3f} [{label}] {metrics[1:-1]}\n")
-            out.flush()
+        if stream or fmt in ("ndjson", "csv"):
+            _emit_record(snapshot_time, src, dst, metrics, fmt, out, csv_writer)
 
 
 def _print_sessions(
-    sessions: dict[str, list[tuple[float, str]]],
+    sessions: dict[str, list[tuple[float, dict]]],
+    fmt: str,
     out: TextIO,
+    csv_writer: csv.DictWriter | None,
 ) -> None:
-    for session_key, metrics in sessions.items():
-        if not metrics:
+    """Print buffered results. Only used for --format text without --stream."""
+    for key, records in sessions.items():
+        if not records:
             continue
-        label = session_key.replace(SESSION_SEP, " <--> ")
+        src, dst = key.split(SESSION_SEP, 1)
+        label = f"{src} <--> {dst}"
         out.write("\n")
         out.write(f"======== START TCP SESSION ({label}) ========\n")
-        for ts, metric in metrics:
-            out.write(f"{ts:.3f} - {metric[1:-1]}\n")
+        for ts, metrics in records:
+            fields = ", ".join(f'"{k}":{v!r}' if isinstance(v, str) else f'"{k}":{v}' for k, v in metrics.items())
+            out.write(f"{ts:.3f} - {fields}\n")
         out.write(f"======== END TCP SESSION ({label}) ========\n")
         out.write("\n")
     out.flush()
 
 
 @click.command()
-@click.version_option(version="0.1.0", prog_name="tcp-metric-collector")
+@click.version_option(version="0.2.0", prog_name="tcp-metric-collector")
 @click.option("-a", "ip", required=True, help="Destination IPv4 address to monitor")
 @click.option("--duration", type=float, default=None,
               help="Stop collecting after N seconds.")
@@ -132,14 +165,17 @@ def _print_sessions(
 @click.option("--output", type=click.Path(), default=None,
               help="Write results to file instead of stdout.")
 @click.option("--stream", is_flag=True, default=False,
-              help="Print each metric line as collected instead of buffering.")
+              help="(text format) Print each metric line as collected instead of buffering.")
+@click.option("--format", "fmt", default="text",
+              type=click.Choice(["text", "ndjson", "csv"], case_sensitive=False),
+              help="Output format. ndjson and csv always stream per-record.")
 def run(ip: str, duration: float | None, max_samples: int | None,
-        output: str | None, stream: bool) -> None:
+        output: str | None, stream: bool, fmt: str) -> None:
     """Collect TCP metrics for all sessions to a destination IPv4 address."""
     if not is_valid_ipv4(ip):
         raise click.BadParameter(f"'{ip}' is not a valid IPv4 address.", param_hint="'-a'")
 
-    sessions: dict[str, list[tuple[float, str]]] = defaultdict(list)
+    sessions: dict[str, list[tuple[float, dict]]] = defaultdict(list)
     shutdown = False
     sample_count = 0
     start_time = time()
@@ -153,6 +189,12 @@ def run(ip: str, duration: float | None, max_samples: int | None,
 
     out: TextIO = open(output, "w") if output else sys.stdout  # noqa: SIM115
 
+    csv_writer: csv.DictWriter | None = None
+    if fmt == "csv":
+        csv_writer = csv.DictWriter(out, fieldnames=list(CSV_FIELDS))
+        csv_writer.writeheader()
+        out.flush()
+
     try:
         click.echo(
             f"INFO: Collecting TCP metrics every {DEFAULT_SLEEP}s. Press Ctrl+C to stop.",
@@ -161,7 +203,7 @@ def run(ip: str, duration: float | None, max_samples: int | None,
 
         while not shutdown:
             lines = _collect_snapshot(ip)
-            _parse_snapshot(lines, time(), sessions, stream, out)
+            _parse_snapshot(lines, time(), sessions, fmt, stream, out, csv_writer)
             sample_count += 1
 
             if max_samples is not None and sample_count >= max_samples:
@@ -171,8 +213,8 @@ def run(ip: str, duration: float | None, max_samples: int | None,
 
             sleep(DEFAULT_SLEEP)
 
-        if not stream:
-            _print_sessions(sessions, out)
+        if fmt == "text" and not stream:
+            _print_sessions(sessions, fmt, out, csv_writer)
 
     finally:
         if output and not out.closed:

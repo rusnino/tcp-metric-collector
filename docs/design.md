@@ -62,12 +62,16 @@ Metrics are parsed and stored into `sessions` on every poll cycle. Raw `ss` outp
 
 ### Output Modes
 
-| Mode | Trigger | Behaviour |
-|------|---------|-----------|
-| Buffered (default) | exit | `_print_sessions()` called once after loop ends |
-| Stream | `--stream` | Each parsed sample written to `out` immediately during collection |
+| Format | Trigger | Behaviour |
+|--------|---------|-----------|
+| `text` (default) | exit | `_print_sessions()` called once after loop ends; session blocks |
+| `text --stream` | per-sample | One line per sample emitted immediately; no session blocks |
+| `ndjson` | per-sample | One valid JSON object per line, always streamed |
+| `csv` | per-sample | Header + one row per sample, always streamed |
 
-Both modes write to stdout by default. `--output FILE` redirects both modes to a file.
+`ndjson` and `csv` always stream per-record regardless of `--stream` flag.
+Both include `ts`, `src`, `dst` fields alongside the 7 metrics.
+All modes write to stdout by default; `--output FILE` redirects to a file.
 
 ### Termination Conditions
 
@@ -106,19 +110,27 @@ Fixed by checking `isinstance(..., ipaddress.IPv4Address)`. IPv6 input fails imm
 
 Both `SIGINT` (Ctrl+C) and `SIGTERM` (`kill`) set a `shutdown` flag. The loop exits cleanly after the current iteration, then calls `_print_sessions()` (or skips it in `--stream` mode where output was already emitted).
 
-### 7. `click` instead of `argparse`
+### 7. `--format text|ndjson|csv` — proper structured output
+
+Previous output did `metric[1:-1]` — stripped `{` and `}` from `json.dumps()`. Looked like JSON fields but was not valid JSON. Could not be piped to `jq`, parsed by CSV readers, or consumed by any standard tooling.
+
+`_parse_session_line()` now returns `(src, dst)` tuple. `_parse_metrics_line()` returns a raw `dict`. Internal storage is `dict[key, list[tuple[float, dict]]]` — formatters receive typed data, not pre-serialised strings.
+
+`--format ndjson` emits `{"ts":..., "src":..., "dst":..., <metrics>}` — one valid JSON object per line. `--format csv` emits RFC 4180 CSV with a header row. Both always stream per-record. `--format text` (default) preserves human-readable session block output.
+
+### 8. `click` instead of `argparse`
 
 `@click.command()` + `@click.option()` decorators make `run()` the entrypoint directly. IP validation failure raises `click.BadParameter` for consistent error formatting. `click.echo()` used throughout; `err=True` routes errors to stderr.
 
-### 8. uv / uvx packaging
+### 9. uv / uvx packaging
 
 `pyproject.toml` declares `[project.scripts]` entrypoint for `uvx --from . tcp-metric-collector`. PEP 723 inline script metadata enables `uv run tcp_metrics_collector.py` without project setup. `hatchling` build backend with explicit `packages` config for flat single-file module.
 
-### 9. `send` metric normalization
+### 10. `send` metric normalization
 
 `ss` outputs send rate as `send Xbps` (space-separated). Normalised to `send:Xbps` before regex matching.
 
-### 10. Pair-based parsing — no cross-line state
+### 11. Pair-based parsing — no cross-line state
 
 Each session line is paired atomically with `lines[i+1]`. `_parse_session_line()` and `_parse_metrics_line()` each return `None` on skip conditions. No `curr_session` state persists — a skipped session line cannot cause metrics to leak into a previous session.
 
@@ -133,4 +145,4 @@ Each session line is paired atomically with `lines[i+1]`. `_parse_session_line()
 
 - **IPv4 only**: enforced at input by `is_valid_ipv4()`.
 - **In-memory accumulation**: parsed tuples still grow with session count × duration. For very long runs, use `--max-samples` or `--duration` to bound memory.
-- **Output format**: JSON per line is human-readable. For machine ingestion use `--stream` and pipe to a consumer.
+- **Output format**: `--format ndjson` or `--format csv` for machine-readable output. `text` format is human-readable only.

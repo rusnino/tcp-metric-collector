@@ -38,7 +38,8 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 | `--duration N` | Stop after N seconds |
 | `--max-samples N` | Stop after N snapshots |
 | `--output FILE` | Write results to file instead of stdout |
-| `--stream` | Print each metric line immediately as collected |
+| `--stream` | (text format) Print each metric line as collected |
+| `--format text\|ndjson\|csv` | Output format (default: `text`) |
 
 ## Examples
 
@@ -49,31 +50,40 @@ uv run tcp_metrics_collector.py -a 192.168.1.100
 # Collect for 30 seconds then exit
 uv run tcp_metrics_collector.py -a 192.168.1.100 --duration 30
 
-# Cap memory: stop after 1000 snapshots (~100s)
-uv run tcp_metrics_collector.py -a 192.168.1.100 --max-samples 1000
+# Cap samples and save as NDJSON
+uv run tcp_metrics_collector.py -a 192.168.1.100 --max-samples 1000 --format ndjson --output metrics.ndjson
 
-# Save to file
-uv run tcp_metrics_collector.py -a 192.168.1.100 --duration 60 --output metrics.txt
+# CSV to file
+uv run tcp_metrics_collector.py -a 192.168.1.100 --duration 60 --format csv --output metrics.csv
 
-# Stream mode: print each metric as it arrives (low latency, no buffering)
-uv run tcp_metrics_collector.py -a 192.168.1.100 --stream
+# Stream NDJSON to stdout (pipe-friendly)
+uv run tcp_metrics_collector.py -a 192.168.1.100 --format ndjson | jq .
 ```
 
-## Output
+## Output Formats
 
-**Default (buffered)** — per-session blocks printed on exit:
+### `text` (default) — human-readable session blocks on exit
 
 ```
 ======== START TCP SESSION (192.168.1.50:45231 <--> 192.168.1.100:80) ========
-1746518400.100 - "cwnd":10,"rtt":1.234,"mss":1460,"ssthresh":2147483647,"send":"1.23Mbps","unacked":0,"retrans":0/0
-1746518400.200 - "cwnd":12,"rtt":1.198,...
+1746518400.100 - "cwnd":10, "rtt":"1.234", "mss":1460, ...
+1746518400.200 - "cwnd":12, "rtt":"1.198", ...
 ======== END TCP SESSION (...) ========
 ```
 
-**Stream mode (`--stream`)** — one line per sample as collected:
+With `--stream`: one line per sample as collected, no session blocks.
+
+### `ndjson` — one valid JSON object per line (always streams)
+
+```json
+{"ts": 1746518400.1, "src": "192.168.1.50:45231", "dst": "192.168.1.100:80", "cwnd": "10", "rtt": "1.234/1.198", "mss": "1460", "ssthresh": "2147483647", "send": "1.23Mbps", "unacked": "0", "retrans": "0/0"}
+```
+
+### `csv` — header + one row per sample (always streams)
 
 ```
-1746518400.100 [192.168.1.50:45231 <--> 192.168.1.100:80] "cwnd":10,"rtt":1.234,...
+ts,src,dst,cwnd,rtt,mss,ssthresh,send,unacked,retrans
+1746518400.100,192.168.1.50:45231,192.168.1.100:80,10,1.234/1.198,1460,...
 ```
 
 Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
