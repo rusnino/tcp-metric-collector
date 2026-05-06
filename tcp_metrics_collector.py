@@ -247,10 +247,10 @@ def _print_sessions(
 @click.command()
 @click.version_option(version="0.3.0", prog_name="tcp-metric-collector")
 @click.option("-a", "ip", required=True, help="Destination IPv4 address to monitor")
-@click.option("--duration", type=float, default=None,
-              help="Stop collecting after N seconds.")
-@click.option("--max-samples", type=int, default=None,
-              help="Stop collecting after N snapshots.")
+@click.option("--duration", type=click.FloatRange(min=0.001), default=None,
+              help="Stop collecting after N seconds (must be > 0).")
+@click.option("--max-samples", type=click.IntRange(min=1), default=None,
+              help="Stop collecting after N snapshots (must be >= 1).")
 @click.option("--output", type=click.Path(), default=None,
               help="Write results to file instead of stdout.")
 @click.option("--stream", is_flag=True, default=False,
