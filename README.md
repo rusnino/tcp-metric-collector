@@ -18,7 +18,7 @@ Collects TCP metrics per destination IPv4 address on Linux. Samples `ss` socket 
 # Run directly without install
 uv run tcp_metrics_collector.py -a <destination_ip>
 
-# Or install as CLI tool
+# Install as CLI tool
 uvx --from . tcp-metric-collector -a <destination_ip>
 ```
 
@@ -53,10 +53,12 @@ uv run tcp_metrics_collector.py -a 192.168.1.100
 uv run tcp_metrics_collector.py -a 192.168.1.100 --duration 30
 
 # Cap samples and save as NDJSON
-uv run tcp_metrics_collector.py -a 192.168.1.100 --max-samples 1000 --format ndjson --output metrics.ndjson
+uv run tcp_metrics_collector.py -a 192.168.1.100 \
+  --max-samples 1000 --format ndjson --output metrics.ndjson
 
 # CSV to file
-uv run tcp_metrics_collector.py -a 192.168.1.100 --duration 60 --format csv --output metrics.csv
+uv run tcp_metrics_collector.py -a 192.168.1.100 \
+  --duration 60 --format csv --output metrics.csv
 
 # Stream NDJSON to stdout (pipe-friendly)
 uv run tcp_metrics_collector.py -a 192.168.1.100 --format ndjson | jq .
@@ -74,8 +76,8 @@ uv run tcp_metrics_collector.py -a 192.168.1.100 --debug
 
 ```
 ======== START TCP SESSION (192.168.1.50:45231 <--> 192.168.1.100:80) ========
-1746518400.100 - "cwnd":10, "rtt":"1.234", "mss":1460, ...
-1746518400.200 - "cwnd":12, "rtt":"1.198", ...
+1746518400.100 - "cwnd":10, "mss":1460, "ssthresh":2147483647, "unacked":0, "rtt_ms":1.234, "rttvar_ms":0.617, "retrans_cur":0, "retrans_total":0, "send":"84.7Mbps"
+1746518400.200 - "cwnd":12, "mss":1460, "ssthresh":2147483647, "unacked":0, "rtt_ms":1.198, "rttvar_ms":0.601, "retrans_cur":0, "retrans_total":0, "send":"84.7Mbps"
 ======== END TCP SESSION (...) ========
 ```
 
@@ -107,7 +109,7 @@ Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 | `ssthresh` | `int \| null` | Slow-start threshold |
 | `unacked` | `int \| null` | Unacknowledged segments |
 | `rtt_ms` | `float \| null` | Round-trip time (ms) |
-| `rttvar_ms` | `float \| null` | RTT variance (ms) — second component of `rtt:X/Y` |
+| `rttvar_ms` | `float \| null` | RTT variance (ms) — second component of `rtt:X/Y` from ss |
 | `retrans_cur` | `int \| null` | Current retransmissions |
 | `retrans_total` | `int \| null` | Total retransmissions |
 | `send` | `string \| null` | Estimated send rate (e.g. `"84.7Mbps"`) |
@@ -117,12 +119,14 @@ Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 ## Diagnostics
 
 **No output after Ctrl+C?** Use `--debug` to see which lines ss returns and why sessions are skipped:
+
 ```bash
 uv run tcp_metrics_collector.py -a 192.168.1.100 --debug
 ```
-Common causes: no active TCP connections to target IP; target is not reachable; ss output format differs from expected (check `ss -i dst <ip>` manually).
 
-**Sampling interval accuracy:** The tool uses a monotonic tick scheduler — actual interval is `DEFAULT_SLEEP` (100ms) minus ss execution time. If ss takes longer than 100ms, the next sample fires immediately with no sleep. Use `--verbose` to observe sample cadence.
+Common causes: no active TCP connections to target IP; target unreachable; ss output format differs from expected (check `ss -H -n -i dst 192.168.1.100` manually).
+
+**Sampling interval accuracy:** Uses monotonic tick scheduler — actual interval is 100ms minus ss execution time. If ss takes longer than 100ms, next sample fires immediately. Use `--verbose` to observe sample cadence.
 
 ## Known Limitations
 
