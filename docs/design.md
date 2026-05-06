@@ -1,0 +1,114 @@
+# Design Document — TCP Metric Collector
+
+## Purpose
+
+Passive TCP performance monitoring tool. Captures kernel-level TCP metrics for all active sessions to a target IP by periodically querying `ss` (socket statistics). Intended for diagnosing congestion, retransmission, and throughput issues on sender-side Linux hosts.
+
+## Requirements
+
+- Python 3.6+
+- Linux with `iproute2` installed
+
+## Architecture
+
+Single-file Python 3 script. No external dependencies beyond stdlib.
+
+```
+┌─────────────────────────────────────────────────────┐
+│                      run()                          │
+│                                                     │
+│  args parse → IP validate → SIGINT/SIGTERM register │
+│                     │                               │
+│              ┌──────▼──────┐                        │
+│              │  while True │  ← 100ms poll loop     │
+│              │  ss -i dst  │  (subprocess.run)      │
+│              │  append raw │  + wall-clock time()   │
+│              └──────┬──────┘                        │
+│                     │ Ctrl+C / SIGTERM               │
+│                     ▼                               │
+│           print_tcp_metrics(list)                   │
+│                     │                               │
+│         parse sessions → parse metrics              │
+│                     │                               │
+│              stdout output                          │
+└─────────────────────────────────────────────────────┘
+```
+
+## Data Flow
+
+### Collection Phase
+
+```
+subprocess.run(["ss", "-i", "dst", <ip>])
+  → filter lines containing <ip> or "wscale"
+  → (time(), filtered_output) appended to tcp_metrics[]
+  → repeated every DEFAULT_SLEEP (0.1s) until SIGINT/SIGTERM
+```
+
+All raw `ss` output held in memory as list of `(timestamp, str)` tuples. No streaming parse during collection.
+
+### Parse Phase (triggered on SIGINT or SIGTERM)
+
+```
+tcp_metrics[]  (list of (float, str) tuples)
+  → iterate snapshots
+    → scan lines for "tcp " → extract session key (src:port_dst:port)
+    → scan next line for "wscale" → extract metrics
+      → special-case: "send <val>" → "send:<val>" before regex
+      → RE_TCP_METRIC_PARAM_LOOKUP extracts key:value pairs
+      → real wall-clock timestamp stored per sample
+  → print per-session blocks
+```
+
+### Session Key Format
+
+`{src_ip}:{src_port}_{dst_ip}:{dst_port}`
+
+Used as dict key in `print_data`. `curr_session` pointer tracks current session while iterating lines.
+
+## Key Design Decisions
+
+### 1. Buffer-all, parse-on-exit
+
+Simplifies collection loop. Avoids parse overhead during sampling window. Trade-off: unbounded memory growth for long captures. Acceptable for short diagnostic sessions.
+
+### 2. `subprocess.run` instead of `os.popen`
+
+`os.popen` is deprecated in Python 3. `subprocess.run` with `capture_output=True, text=True` is the idiomatic replacement. Args passed as list — no shell injection risk.
+
+### 3. `ss` instead of `/proc/net/tcp`
+
+`ss` surfaces extended TCP info (`-i` flag: internal kernel socket stats — cwnd, rtt, etc.) not available in `/proc/net/tcp`. Requires `iproute2`.
+
+### 4. Real wall-clock timestamps
+
+Each sample stores `time()` at collection time. Accurate for correlation with external events. Previous versions used synthetic `sample_count * DEFAULT_SLEEP` which drifted if `ss` call exceeded 100ms.
+
+### 5. `ipaddress` module for IP validation
+
+Replaces hand-rolled regex that accepted out-of-range octets (e.g. `999.0.0.1`). `ipaddress.ip_address()` from stdlib correctly validates both IPv4 and IPv6.
+
+### 6. SIGTERM handling
+
+Both `SIGINT` (Ctrl+C) and `SIGTERM` (`kill`) now trigger graceful shutdown and metric printout. Previous version silently exited on SIGTERM without printing results.
+
+### 7. `-a` argument is required
+
+`required=True` on argparse argument. Previous version used a default of `0.0.0.0` and printed a manual error message. Argparse now handles the missing-argument error.
+
+### 8. `send` metric normalization
+
+`ss` outputs send rate as `send Xbps` (space-separated), unlike all other metrics which use `key:value`. Line with `"send "` is special-cased before regex parsing.
+
+## Regex Patterns
+
+| Pattern | Purpose |
+|---------|---------|
+| `RE_TCP_SESSION_LOOKUP` | Extracts `(src_ip:port, dst_ip:port)` from `ss` session line |
+| `RE_TCP_METRIC_PARAM_LOOKUP` | Extracts `key:value` pairs from metrics line |
+
+## Known Limitations
+
+- **IPv4 only**: `RE_TCP_SESSION_LOOKUP` matches `\d+\.\d+\.\d+\.\d+` — IPv6 sessions silently skipped.
+- **Memory**: `tcp_metrics[]` grows unbounded. Could rotate or stream-parse for long captures.
+- **Output format**: JSON per line is human-readable but not ideal for machine ingestion. Could output NDJSON or CSV.
