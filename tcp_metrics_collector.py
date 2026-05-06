@@ -14,7 +14,9 @@ import re
 import signal
 import subprocess
 import sys
+from collections import defaultdict
 from time import sleep, time
+from typing import TextIO
 
 import click
 
@@ -56,48 +58,91 @@ def _parse_metrics_line(line: str) -> str | None:
     return json.dumps(parsed)
 
 
-def print_tcp_metrics(tcp_metrics: list[tuple[float, str]]) -> None:
-    sessions: dict[str, list[tuple[float, str]]] = {}
+def _collect_snapshot(ip: str) -> list[str]:
+    """Run ss and return filtered lines preserving session+metrics adjacency."""
+    result = subprocess.run(
+        ["ss", "-i", "dst", ip],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        click.echo(f"Error: ss failed: {result.stderr.strip()}", err=True)
+        sys.exit(1)
 
-    for snapshot_time, snapshot in tcp_metrics:
-        lines = snapshot.splitlines()
-        for i, line in enumerate(lines):
-            session_key = _parse_session_line(line)
-            if session_key is None:
-                continue
+    raw = result.stdout.splitlines()
+    kept: list[str] = []
+    for i, line in enumerate(raw):
+        if ip in line:
+            kept.append(line)
+        elif "wscale" in line and i > 0 and ip in raw[i - 1]:
+            kept.append(line)
+    return kept
 
-            next_line = lines[i + 1] if i + 1 < len(lines) else ""
-            metrics = _parse_metrics_line(next_line)
-            if metrics is None:
-                continue
 
-            if session_key not in sessions:
-                sessions[session_key] = []
-            sessions[session_key].append((snapshot_time, metrics))
+def _parse_snapshot(
+    lines: list[str],
+    snapshot_time: float,
+    sessions: dict[str, list[tuple[float, str]]],
+    stream: bool,
+    out: TextIO,
+) -> None:
+    """Parse one snapshot into sessions in-place. Streams to out if stream=True."""
+    for i, line in enumerate(lines):
+        session_key = _parse_session_line(line)
+        if session_key is None:
+            continue
 
+        next_line = lines[i + 1] if i + 1 < len(lines) else ""
+        metrics = _parse_metrics_line(next_line)
+        if metrics is None:
+            continue
+
+        sessions[session_key].append((snapshot_time, metrics))
+
+        if stream:
+            label = session_key.replace(SESSION_SEP, " <--> ")
+            out.write(f"{snapshot_time:.3f} [{label}] {metrics[1:-1]}\n")
+            out.flush()
+
+
+def _print_sessions(
+    sessions: dict[str, list[tuple[float, str]]],
+    out: TextIO,
+) -> None:
     for session_key, metrics in sessions.items():
         if not metrics:
             continue
-
         label = session_key.replace(SESSION_SEP, " <--> ")
-        click.echo()
-        click.echo(f"======== START TCP SESSION ({label}) ========")
+        out.write("\n")
+        out.write(f"======== START TCP SESSION ({label}) ========\n")
         for ts, metric in metrics:
-            click.echo(f"{ts:.3f} - {metric[1:-1]}")
-        click.echo(f"======== END TCP SESSION ({label}) ========")
-        click.echo()
+            out.write(f"{ts:.3f} - {metric[1:-1]}\n")
+        out.write(f"======== END TCP SESSION ({label}) ========\n")
+        out.write("\n")
+    out.flush()
 
 
 @click.command()
 @click.version_option(version="0.1.0", prog_name="tcp-metric-collector")
 @click.option("-a", "ip", required=True, help="Destination IPv4 address to monitor")
-def run(ip: str) -> None:
+@click.option("--duration", type=float, default=None,
+              help="Stop collecting after N seconds.")
+@click.option("--max-samples", type=int, default=None,
+              help="Stop collecting after N snapshots.")
+@click.option("--output", type=click.Path(), default=None,
+              help="Write results to file instead of stdout.")
+@click.option("--stream", is_flag=True, default=False,
+              help="Print each metric line as collected instead of buffering.")
+def run(ip: str, duration: float | None, max_samples: int | None,
+        output: str | None, stream: bool) -> None:
     """Collect TCP metrics for all sessions to a destination IPv4 address."""
     if not is_valid_ipv4(ip):
         raise click.BadParameter(f"'{ip}' is not a valid IPv4 address.", param_hint="'-a'")
 
-    tcp_metrics: list[tuple[float, str]] = []
+    sessions: dict[str, list[tuple[float, str]]] = defaultdict(list)
     shutdown = False
+    sample_count = 0
+    start_time = time()
 
     def signal_handler(*_) -> None:
         nonlocal shutdown
@@ -106,31 +151,33 @@ def run(ip: str) -> None:
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    click.echo(f"INFO: Collecting TCP metrics every {DEFAULT_SLEEP}s. Press Ctrl+C to stop.")
+    out: TextIO = open(output, "w") if output else sys.stdout  # noqa: SIM115
 
-    while not shutdown:
-        result = subprocess.run(
-            ["ss", "-i", "dst", ip],
-            capture_output=True,
-            text=True,
+    try:
+        click.echo(
+            f"INFO: Collecting TCP metrics every {DEFAULT_SLEEP}s. Press Ctrl+C to stop.",
+            file=sys.stderr,
         )
-        if result.returncode != 0:
-            click.echo(f"Error: ss failed: {result.stderr.strip()}", err=True)
-            sys.exit(1)
 
-        # Preserve adjacency: keep session line + immediately following metrics line
-        raw_lines = result.stdout.splitlines()
-        kept: list[str] = []
-        for i, line in enumerate(raw_lines):
-            if ip in line:
-                kept.append(line)
-            elif "wscale" in line and i > 0 and ip in raw_lines[i - 1]:
-                kept.append(line)
+        while not shutdown:
+            lines = _collect_snapshot(ip)
+            _parse_snapshot(lines, time(), sessions, stream, out)
+            sample_count += 1
 
-        tcp_metrics.append((time(), "\n".join(kept)))
-        sleep(DEFAULT_SLEEP)
+            if max_samples is not None and sample_count >= max_samples:
+                break
+            if duration is not None and time() - start_time >= duration:
+                break
 
-    print_tcp_metrics(tcp_metrics)
+            sleep(DEFAULT_SLEEP)
+
+        if not stream:
+            _print_sessions(sessions, out)
+
+    finally:
+        if output and not out.closed:
+            out.close()
+
     sys.exit(0)
 
 

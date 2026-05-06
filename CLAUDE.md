@@ -21,16 +21,18 @@ Project uses `uv` for environment management (`pyproject.toml`). One external de
 
 ## Architecture
 
-Single-file script (`tcp_metrics_collector.py`). Flow:
+Single-file script (`tcp_metrics_collector.py`). Key functions:
 
-1. **Collection loop** — polls `ss -i dst <ip>` every 100ms, appends raw output to `tcp_metrics` list
-2. **SIGINT handler** — Ctrl+C triggers `print_tcp_metrics()` on accumulated data then exits
-3. **Parsing** (`print_tcp_metrics`) — walks raw `ss` output, matches TCP sessions via regex, extracts 7 metrics per sample: `cwnd`, `rtt`, `mss`, `ssthresh`, `send`, `unacked`, `retrans`
-4. **Output** — per-session blocks with `timestamp - {metrics_json}` lines
+- `_collect_snapshot(ip)` — runs `ss -i dst <ip>`, returns filtered lines (session + adjacent wscale pairs)
+- `_parse_session_line(line)` → `session_key | None`
+- `_parse_metrics_line(line)` → `json_str | None`
+- `_parse_snapshot(lines, ts, sessions, stream, out)` — merges one snapshot into `sessions` dict; emits immediately if `--stream`
+- `_print_sessions(sessions, out)` — formats buffered output on exit
+- `run()` — click entrypoint; collection loop checks `shutdown` flag + `--duration` + `--max-samples`
 
-Key detail: `send` metric needs special handling — `ss` outputs it as `send <value>` (space-separated) not `send:<value>`, so it's normalized via string replace before regex parsing (`tcp_metrics_collector.py:81`).
+Collection and parsing are merged: each snapshot parsed immediately in the loop. Raw `ss` output never retained — only `(timestamp, json_str)` tuples per session.
 
-Timestamps are synthetic: each sample increments by `DEFAULT_SLEEP` (0.1s), not wall-clock time.
+CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`
 
 ## Commit Policy
 
