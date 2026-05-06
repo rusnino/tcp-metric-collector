@@ -40,6 +40,8 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 | `--output FILE` | Write results to file instead of stdout |
 | `--stream` | (text format) Print each metric line as collected |
 | `--format text\|ndjson\|csv` | Output format (default: `text`) |
+| `-v, --verbose` | Log sample count and session count to stderr each cycle |
+| `--debug` | Log detailed parse events to stderr (implies `--verbose`) |
 
 ## Examples
 
@@ -58,6 +60,12 @@ uv run tcp_metrics_collector.py -a 192.168.1.100 --duration 60 --format csv --ou
 
 # Stream NDJSON to stdout (pipe-friendly)
 uv run tcp_metrics_collector.py -a 192.168.1.100 --format ndjson | jq .
+
+# Verbose — shows sample/session counts on stderr each cycle
+uv run tcp_metrics_collector.py -a 192.168.1.100 --verbose
+
+# Debug — shows every line parsed/skipped (useful when no output appears)
+uv run tcp_metrics_collector.py -a 192.168.1.100 --debug
 ```
 
 ## Output Formats
@@ -99,6 +107,16 @@ Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 | `send` | Estimated send rate |
 | `unacked` | Unacknowledged segments |
 | `retrans` | Retransmission count (current/total) |
+
+## Diagnostics
+
+**No output after Ctrl+C?** Use `--debug` to see which lines ss returns and why sessions are skipped:
+```bash
+uv run tcp_metrics_collector.py -a 192.168.1.100 --debug
+```
+Common causes: no active TCP connections to target IP; target is not reachable; ss output format differs from expected (check `ss -i dst <ip>` manually).
+
+**Sampling interval accuracy:** The tool uses a monotonic tick scheduler — actual interval is `DEFAULT_SLEEP` (100ms) minus ss execution time. If ss takes longer than 100ms, the next sample fires immediately with no sleep. Use `--verbose` to observe sample cadence.
 
 ## Known Limitations
 

@@ -1,7 +1,5 @@
 """Unit tests for tcp_metrics_collector parsing functions."""
 
-from __future__ import annotations
-
 import io
 from collections import defaultdict
 from pathlib import Path

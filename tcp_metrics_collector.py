@@ -63,7 +63,7 @@ def _parse_metrics_line(line: str) -> dict[str, int | str] | None:
     if "wscale" not in line:
         return None
     parsed: dict[str, int | str] = {k: 0 for k in METRIC_KEYS}
-    normalized = line.replace("send ", "send:") if "send " in line else line
+    normalized = re.sub(r"\bsend ", "send:", line, count=1) if "send " in line else line
     for match in re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized):
         parsed[match.group(1)] = match.group(2)
     _dbg(f"parsed metrics: {parsed}")
@@ -120,7 +120,8 @@ def _emit_record(
         out.write(json.dumps(obj) + "\n")
         out.flush()
     elif fmt == "csv":
-        assert csv_writer is not None
+        if csv_writer is None:
+            raise RuntimeError("csv_writer required for csv format")
         csv_writer.writerow({"ts": f"{ts:.3f}", "src": src, "dst": dst, **metrics})
         out.flush()
     else:
@@ -167,9 +168,7 @@ def _parse_snapshot(
 
 def _print_sessions(
     sessions: dict[str, list[tuple[float, dict]]],
-    fmt: str,
     out: TextIO,
-    csv_writer: csv.DictWriter | None,
 ) -> None:
     for key, records in sessions.items():
         if not records:
@@ -278,7 +277,7 @@ def run(ip: str, duration: float | None, max_samples: int | None,
         _log(f"collection finished: {sample_count} samples, {len(sessions)} session(s)")
 
         if fmt == "text" and not stream:
-            _print_sessions(sessions, fmt, out, csv_writer)
+            _print_sessions(sessions, out)
 
     finally:
         if output and not out.closed:

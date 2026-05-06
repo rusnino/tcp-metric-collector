@@ -24,13 +24,15 @@ Project uses `uv` for environment management (`pyproject.toml`). One external de
 Single-file script (`tcp_metrics_collector.py`). Key functions:
 
 - `_collect_snapshot(ip)` — runs `ss -i dst <ip>`, returns filtered lines (session + adjacent wscale pairs)
-- `_parse_session_line(line)` → `session_key | None`
-- `_parse_metrics_line(line)` → `json_str | None`
-- `_parse_snapshot(lines, ts, sessions, stream, out)` — merges one snapshot into `sessions` dict; emits immediately if `--stream`
-- `_print_sessions(sessions, out)` — formats buffered output on exit
-- `run()` — click entrypoint; collection loop checks `shutdown` flag + `--duration` + `--max-samples`
+- `_collect_snapshot(ip, shutdown_ref)` → `list[str] | None` — runs `ss -i dst <ip>`, filters to session+wscale pairs; returns `None` on shutdown
+- `_parse_session_line(line)` → `(src, dst) | None`
+- `_parse_metrics_line(line)` → `dict[str, int | str] | None`
+- `_parse_snapshot(lines, ts, sessions, fmt, stream, out, csv_writer)` — merges one snapshot into `sessions` dict in-place; emits immediately for ndjson/csv or `--stream`
+- `_emit_record(ts, src, dst, metrics, fmt, out, csv_writer)` — formats and writes one record in requested format
+- `_print_sessions(sessions, out)` — formats buffered text output on exit (text format only)
+- `run()` — click entrypoint; monotonic tick scheduler, `shutdown_ref` flag, `--duration` + `--max-samples` termination
 
-Collection and parsing are merged: each snapshot parsed immediately in the loop. Raw `ss` output never retained — only `(timestamp, json_str)` tuples per session.
+Collection and parsing merged: each snapshot parsed immediately in the loop. `sessions` stores `(timestamp, dict)` tuples — not pre-serialised strings. Raw `ss` output never retained beyond current cycle.
 
 CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`
 

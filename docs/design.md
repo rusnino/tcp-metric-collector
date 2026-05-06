@@ -52,7 +52,7 @@ _parse_snapshot(lines, snapshot_time, sessions, stream, out)
       if stream: write line to out immediately
 ```
 
-Metrics are parsed and stored into `sessions` on every poll cycle. Raw `ss` output is never retained — only the parsed `(timestamp, json_str)` tuples per session. Memory grows proportionally to **unique sessions × samples per session**, not to total raw output volume.
+Metrics are parsed and stored into `sessions` on every poll cycle. Raw `ss` output is never retained — only `(timestamp, dict)` tuples per session. Memory grows proportionally to **unique sessions × samples per session**, not to total raw output volume.
 
 ### Session Key Format
 
@@ -86,7 +86,7 @@ Loop exits when any of these is true:
 
 Previous design buffered all raw `ss` output as `(float, str)` tuples in `tcp_metrics[]` and parsed only on exit. This caused unbounded memory growth even during idle runs (empty snapshot strings still appended every 100ms).
 
-Current design parses each snapshot immediately in the collection loop. Only parsed `(timestamp, json_str)` tuples are kept. Raw `ss` output is never stored beyond the current poll cycle.
+Current design parses each snapshot immediately in the collection loop. Only `(timestamp, dict)` tuples are kept per session. Raw `ss` output is never stored beyond the current poll cycle.
 
 ### 2. `subprocess.run` instead of `os.popen`
 
@@ -130,7 +130,13 @@ Previous output did `metric[1:-1]` — stripped `{` and `}` from `json.dumps()`.
 
 `ss` outputs send rate as `send Xbps` (space-separated). Normalised to `send:Xbps` before regex matching.
 
-### 11. Pair-based parsing — no cross-line state
+### 11. Monotonic tick scheduler
+
+`sleep(DEFAULT_SLEEP)` after each `ss` call caused effective interval of `runtime(ss) + 100ms`. On a busy host ss can take 20–80ms, making the interval non-uniform and cumulative drift observable in cwnd/RTT series.
+
+Fix: `next_tick` advances by exactly `DEFAULT_SLEEP` each iteration. `sleep(max(0, next_tick - monotonic()))` sleeps only the remaining budget. If ss overruns, sleep is skipped. `monotonic()` used for scheduling; `time()` for output timestamps (wall-clock, needed for external correlation).
+
+### 12. Pair-based parsing — no cross-line state
 
 Each session line is paired atomically with `lines[i+1]`. `_parse_session_line()` and `_parse_metrics_line()` each return `None` on skip conditions. No `curr_session` state persists — a skipped session line cannot cause metrics to leak into a previous session.
 
