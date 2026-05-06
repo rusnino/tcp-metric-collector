@@ -6,6 +6,8 @@
 # TCP Metrics Collector
 #
 
+from __future__ import annotations
+
 import ipaddress
 import json
 import re
@@ -13,13 +15,14 @@ import signal
 import subprocess
 import sys
 from time import sleep, time
-from typing import Dict, List, Tuple
 
 import click
 
 DEFAULT_SLEEP: float = 0.1
+SESSION_SEP = "|"
+
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+\:\S+)\s+(\d+\.\d+\.\d+\.\d+\:\S+)$"
-RE_TCP_METRIC_PARAM_LOOKUP = r"(\S+)\:(\S+)"
+RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans)\:(\S+)"
 
 
 def is_valid_ip(ip: str) -> bool:
@@ -30,12 +33,12 @@ def is_valid_ip(ip: str) -> bool:
         return False
 
 
-def print_tcp_metrics(tcp_metrics: List[Tuple[float, str]]) -> None:
-    sessions: Dict[str, List[Tuple[float, str]]] = {}
+def print_tcp_metrics(tcp_metrics: list[tuple[float, str]]) -> None:
+    sessions: dict[str, list[tuple[float, str]]] = {}
     curr_session: str = ""
 
     def _parse_tcp_metrics(metrics: str) -> str:
-        parsed_metrics = {
+        parsed_metrics: dict[str, int | str] = {
             "cwnd": 0,
             "rtt": 0,
             "mss": 0,
@@ -45,11 +48,10 @@ def print_tcp_metrics(tcp_metrics: List[Tuple[float, str]]) -> None:
             "retrans": 0,
         }
 
-        for param in metrics.split(" "):
-            lookup_param = re.findall(RE_TCP_METRIC_PARAM_LOOKUP, param)
-            if not lookup_param or lookup_param[0][0].lower() not in parsed_metrics:
-                continue
-            parsed_metrics[lookup_param[0][0]] = lookup_param[0][1]
+        # Normalize "send <value>" → "send:<value>" before matching
+        normalized = metrics.replace("send ", "send:") if "send " in metrics else metrics
+        for match in re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized):
+            parsed_metrics[match.group(1)] = match.group(2)
 
         return json.dumps(parsed_metrics)
 
@@ -59,28 +61,26 @@ def print_tcp_metrics(tcp_metrics: List[Tuple[float, str]]) -> None:
                 if "CLOSING" in line:
                     continue
 
-                lookup_tcp_session = re.findall(RE_TCP_SESSION_LOOKUP, line.strip())
-                if not lookup_tcp_session:
+                lookup = re.findall(RE_TCP_SESSION_LOOKUP, line.strip())
+                if not lookup:
                     continue
 
-                curr_session = f"{lookup_tcp_session[0][0]}_{lookup_tcp_session[0][1]}"
+                curr_session = f"{lookup[0][0]}{SESSION_SEP}{lookup[0][1]}"
                 if curr_session not in sessions:
                     sessions[curr_session] = []
 
             if "wscale" in line and curr_session:
-                line = line.replace("send ", "send:") if "send " in line else line
                 sessions[curr_session].append((snapshot_time, _parse_tcp_metrics(line)))
 
     for session_key, metrics in sessions.items():
         if not metrics:
             continue
 
-        label = session_key.replace("_", " <--> ")
+        label = session_key.replace(SESSION_SEP, " <--> ")
         click.echo()
         click.echo(f"======== START TCP SESSION ({label}) ========")
         for ts, metric in metrics:
-            inner = metric[1:-1]
-            click.echo(f"{ts:.3f} - {inner}")
+            click.echo(f"{ts:.3f} - {metric[1:-1]}")
         click.echo(f"======== END TCP SESSION ({label}) ========")
         click.echo()
 
@@ -93,18 +93,19 @@ def run(ip: str) -> None:
     if not is_valid_ip(ip):
         raise click.BadParameter(f"'{ip}' is not a valid IP address.", param_hint="'-a'")
 
-    tcp_metrics: List[Tuple[float, str]] = []
+    tcp_metrics: list[tuple[float, str]] = []
+    shutdown = False
 
     def signal_handler(*_) -> None:
-        print_tcp_metrics(tcp_metrics)
-        sys.exit(0)
+        nonlocal shutdown
+        shutdown = True
 
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     click.echo(f"INFO: Collecting TCP metrics every {DEFAULT_SLEEP}s. Press Ctrl+C to stop.")
 
-    while True:
+    while not shutdown:
         result = subprocess.run(
             ["ss", "-i", "dst", ip],
             capture_output=True,
@@ -116,7 +117,7 @@ def run(ip: str) -> None:
 
         # Preserve adjacency: keep session line + immediately following metrics line
         raw_lines = result.stdout.splitlines()
-        kept: List[str] = []
+        kept: list[str] = []
         for i, line in enumerate(raw_lines):
             if ip in line:
                 kept.append(line)
@@ -125,6 +126,9 @@ def run(ip: str) -> None:
 
         tcp_metrics.append((time(), "\n".join(kept)))
         sleep(DEFAULT_SLEEP)
+
+    print_tcp_metrics(tcp_metrics)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
