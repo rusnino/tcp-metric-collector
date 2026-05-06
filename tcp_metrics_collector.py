@@ -156,12 +156,13 @@ def _parse_snapshot(
             continue
 
         src, dst = session
-        key = f"{src}{SESSION_SEP}{dst}"
-        sessions[key].append((snapshot_time, metrics))
         found += 1
 
         if stream or fmt in ("ndjson", "csv"):
             _emit_record(snapshot_time, src, dst, metrics, fmt, out, csv_writer)
+        else:
+            key = f"{src}{SESSION_SEP}{dst}"
+            sessions[key].append((snapshot_time, metrics))
 
     _dbg(f"snapshot parsed: {found} session(s) with metrics")
 

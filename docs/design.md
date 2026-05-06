@@ -46,10 +46,12 @@ _collect_snapshot(ip)
 
 _parse_snapshot(lines, snapshot_time, sessions, stream, out)
   → for i, line in enumerate(lines):
-      session_key = _parse_session_line(line)     # None → skip
+      session_key = _parse_session_line(line)       # None → skip
       metrics     = _parse_metrics_line(lines[i+1]) # None → skip
-      sessions[session_key].append((ts, metrics))
-      if stream: write line to out immediately
+      if stream or fmt in (ndjson, csv):
+          emit immediately → discard (O(1) memory)
+      else:
+          sessions[session_key].append((ts, metrics))  # text mode only
 ```
 
 Metrics are parsed and stored into `sessions` on every poll cycle. Raw `ss` output is never retained — only `(timestamp, dict)` tuples per session. Memory grows proportionally to **unique sessions × samples per session**, not to total raw output volume.
@@ -150,5 +152,5 @@ Each session line is paired atomically with `lines[i+1]`. `_parse_session_line()
 ## Known Limitations
 
 - **IPv4 only**: enforced at input by `is_valid_ipv4()`.
-- **In-memory accumulation**: parsed tuples still grow with session count × duration. For very long runs, use `--max-samples` or `--duration` to bound memory.
+- **In-memory accumulation (text mode only)**: `sessions` dict grows with session count × duration, but only in `--format text` without `--stream`. In all other modes (`ndjson`, `csv`, `text --stream`) records are emitted and discarded — memory is O(1) per cycle.
 - **Output format**: `--format ndjson` or `--format csv` for machine-readable output. `text` format is human-readable only.
