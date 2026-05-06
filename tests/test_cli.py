@@ -264,4 +264,4 @@ class TestSsFailure:
         )
         with patch("subprocess.run", return_value=mock_result):
             result = runner.invoke(run, ["-a", "192.168.1.100"], catch_exceptions=False)
-        assert "permission denied" in result.output or "ERROR" in result.output
+        assert "permission denied" in result.output

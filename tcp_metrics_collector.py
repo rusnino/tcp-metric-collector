@@ -143,12 +143,10 @@ def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
         return None
 
     if result.returncode != 0:
-        click.echo(
-            f"ERROR: ss exited with code {result.returncode}"
-            + (f": {result.stderr.strip()}" if result.stderr.strip() else ""),
-            err=True,
-        )
-        sys.exit(1)
+        msg = f"ss exited with code {result.returncode}"
+        if result.stderr.strip():
+            msg += f": {result.stderr.strip()}"
+        raise click.ClickException(msg)
 
     raw = result.stdout.splitlines()
     _dbg(f"ss returned {len(raw)} lines")
@@ -338,8 +336,6 @@ def run(ip: str, duration: float | None, max_samples: int | None,
     finally:
         if output and not out.closed:
             out.close()
-
-    sys.exit(0)
 
 
 if __name__ == "__main__":
