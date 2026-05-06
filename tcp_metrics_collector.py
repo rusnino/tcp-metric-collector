@@ -16,7 +16,7 @@ import signal
 import subprocess
 import sys
 from collections import defaultdict
-from time import sleep, time
+from time import monotonic, sleep, time
 from typing import TextIO
 
 import click
@@ -226,6 +226,7 @@ def run(ip: str, duration: float | None, max_samples: int | None,
     shutdown_ref: list[bool] = [False]
     sample_count = 0
     start_time = time()
+    start_mono = monotonic()
 
     def signal_handler(*_) -> None:
         shutdown_ref[0] = True
@@ -250,7 +251,10 @@ def run(ip: str, duration: float | None, max_samples: int | None,
         _log(f"format={fmt} stream={stream} duration={duration} max_samples={max_samples}"
              f" output={output!r}")
 
+        next_tick = monotonic()
         while not shutdown_ref[0]:
+            next_tick += DEFAULT_SLEEP
+
             lines = _collect_snapshot(ip, shutdown_ref)
             if lines is None:
                 break
@@ -265,11 +269,13 @@ def run(ip: str, duration: float | None, max_samples: int | None,
             if max_samples is not None and sample_count >= max_samples:
                 _log(f"--max-samples {max_samples} reached, stopping")
                 break
-            if duration is not None and time() - start_time >= duration:
+            if duration is not None and monotonic() - start_mono >= duration:
                 _log(f"--duration {duration}s reached, stopping")
                 break
 
-            sleep(DEFAULT_SLEEP)
+            wait = next_tick - monotonic()
+            if wait > 0:
+                sleep(wait)
 
         _log(f"collection finished: {sample_count} samples, {len(sessions)} session(s)")
 
