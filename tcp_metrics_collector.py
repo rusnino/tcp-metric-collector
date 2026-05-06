@@ -131,7 +131,7 @@ def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None
 def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
     """Run ss and return filtered lines. Returns None if interrupted by signal."""
     result = subprocess.run(
-        ["ss", "-i", "dst", ip],
+        ["ss", "-H", "-n", "-i", "dst", ip],
         capture_output=True,
         text=True,
     )
