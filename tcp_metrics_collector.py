@@ -32,44 +32,48 @@ def is_valid_ipv4(ip: str) -> bool:
         return False
 
 
+def _parse_session_line(line: str) -> str | None:
+    """Return session key if line is a valid non-CLOSING TCP session, else None."""
+    if "tcp " not in line or "CLOSING" in line:
+        return None
+    lookup = re.findall(RE_TCP_SESSION_LOOKUP, line.strip())
+    if not lookup:
+        return None
+    return f"{lookup[0][0]}{SESSION_SEP}{lookup[0][1]}"
+
+
+def _parse_metrics_line(line: str) -> str | None:
+    """Return JSON metrics string if line contains wscale (ss metrics line), else None."""
+    if "wscale" not in line:
+        return None
+    parsed: dict[str, int | str] = {
+        "cwnd": 0, "rtt": 0, "mss": 0, "ssthresh": 0,
+        "send": 0, "unacked": 0, "retrans": 0,
+    }
+    normalized = line.replace("send ", "send:") if "send " in line else line
+    for match in re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized):
+        parsed[match.group(1)] = match.group(2)
+    return json.dumps(parsed)
+
+
 def print_tcp_metrics(tcp_metrics: list[tuple[float, str]]) -> None:
     sessions: dict[str, list[tuple[float, str]]] = {}
-    curr_session: str = ""
 
-    def _parse_tcp_metrics(metrics: str) -> str:
-        parsed_metrics: dict[str, int | str] = {
-            "cwnd": 0,
-            "rtt": 0,
-            "mss": 0,
-            "ssthresh": 0,
-            "send": 0,
-            "unacked": 0,
-            "retrans": 0,
-        }
+    for snapshot_time, snapshot in tcp_metrics:
+        lines = snapshot.splitlines()
+        for i, line in enumerate(lines):
+            session_key = _parse_session_line(line)
+            if session_key is None:
+                continue
 
-        # Normalize "send <value>" → "send:<value>" before matching
-        normalized = metrics.replace("send ", "send:") if "send " in metrics else metrics
-        for match in re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized):
-            parsed_metrics[match.group(1)] = match.group(2)
+            next_line = lines[i + 1] if i + 1 < len(lines) else ""
+            metrics = _parse_metrics_line(next_line)
+            if metrics is None:
+                continue
 
-        return json.dumps(parsed_metrics)
-
-    for snapshot_time, tcp_session in tcp_metrics:
-        for line in tcp_session.splitlines():
-            if "tcp " in line:
-                if "CLOSING" in line:
-                    continue
-
-                lookup = re.findall(RE_TCP_SESSION_LOOKUP, line.strip())
-                if not lookup:
-                    continue
-
-                curr_session = f"{lookup[0][0]}{SESSION_SEP}{lookup[0][1]}"
-                if curr_session not in sessions:
-                    sessions[curr_session] = []
-
-            if "wscale" in line and curr_session:
-                sessions[curr_session].append((snapshot_time, _parse_tcp_metrics(line)))
+            if session_key not in sessions:
+                sessions[session_key] = []
+            sessions[session_key].append((snapshot_time, metrics))
 
     for session_key, metrics in sessions.items():
         if not metrics:

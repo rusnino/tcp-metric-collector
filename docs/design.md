@@ -54,13 +54,16 @@ All raw `ss` output held in memory as list of `(timestamp, str)` tuples. No stre
 ```
 tcp_metrics[]  (list of (float, str) tuples)
   → iterate snapshots
-    → scan lines for "tcp " → extract session key (src:port_dst:port)
-    → scan next line for "wscale" → extract metrics
-      → special-case: "send <val>" → "send:<val>" before regex
-      → RE_TCP_METRIC_PARAM_LOOKUP extracts key:value pairs
-      → real wall-clock timestamp stored per sample
+    → iterate lines by index i
+      → _parse_session_line(lines[i]) → session_key or None
+        (None if not TCP, CLOSING, or unrecognised format)
+      → _parse_metrics_line(lines[i+1]) → JSON str or None
+        (None if next line has no "wscale")
+      → only if both non-None: append (timestamp, metrics) to sessions[key]
   → print per-session blocks
 ```
+
+Each session line is paired explicitly with `lines[i+1]`. No `curr_session` state persists across lines or snapshots — a skipped or unrecognised session line cannot cause metrics to leak into a previous session.
 
 ### Session Key Format
 
