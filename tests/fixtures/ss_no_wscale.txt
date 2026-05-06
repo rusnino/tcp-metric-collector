@@ -1,0 +1,3 @@
+Netid State  Recv-Q Send-Q Local Address:Port    Peer Address:Port
+tcp   ESTAB  0      0      192.168.1.50:45231   192.168.1.100:80
+	 cubic rto:204 rtt:1.234/0.617 mss:1460 cwnd:10 ssthresh:2147483647 send 84.7Mbps unacked:0 retrans:0/0

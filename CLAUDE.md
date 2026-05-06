@@ -34,6 +34,16 @@ Collection and parsing are merged: each snapshot parsed immediately in the loop.
 
 CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`
 
+## Running Tests
+
+```bash
+uv run pytest          # all tests
+uv run pytest -v       # verbose
+uv run pytest tests/test_parser.py::TestParseSnapshot  # single class
+```
+
+Tests are pure unit tests — no real `ss` invocation, no network. Fixtures in `tests/fixtures/` simulate `ss -i` output for: single session, multiple sessions, CLOSING session, IPv6, missing wscale.
+
 ## Commit Policy
 
 Each functionality change must be its own commit. Commit message format:
