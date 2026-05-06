@@ -2,7 +2,7 @@
 name = "tcp-metric-collector"
 version = "0.2.0"
 description = "Collects TCP metrics per destination IP on Linux using ss socket statistics"
-requires-python = ">=3.7"
+requires-python = ">=3.10"
 dependencies = [
     "click>=8.1.8",
 ]

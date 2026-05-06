@@ -1,12 +1,10 @@
 # /// script
-# requires-python = ">=3.7"
+# requires-python = ">=3.10"
 # dependencies = ["click>=8.1.8"]
 # ///
 #
 # TCP Metrics Collector
 #
-
-from __future__ import annotations
 
 import csv
 import ipaddress

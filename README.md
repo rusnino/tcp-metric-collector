@@ -5,7 +5,7 @@ Collects TCP metrics per destination IPv4 address on Linux. Samples `ss` socket 
 ## Requirements
 
 - Linux with `iproute2` (`ss` command)
-- Python 3.7+
+- Python 3.10+
 - `click>=8.1.8` (managed automatically by uv)
 - [uv](https://docs.astral.sh/uv/) (recommended) or plain Python 3
 - Run on **sender side**

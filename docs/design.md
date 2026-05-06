@@ -6,7 +6,7 @@ Passive TCP performance monitoring tool. Captures kernel-level TCP metrics for a
 
 ## Requirements
 
-- Python 3.7+
+- Python 3.10+
 - Linux with `iproute2` installed
 - `click>=8.1.8`
 - [uv](https://docs.astral.sh/uv/) (optional, recommended for running)
