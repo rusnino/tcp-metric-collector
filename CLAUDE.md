@@ -23,10 +23,9 @@ Project uses `uv` for environment management (`pyproject.toml`). One external de
 
 Single-file script (`tcp_metrics_collector.py`). Key functions:
 
-- `_collect_snapshot(ip)` — runs `ss -i dst <ip>`, returns filtered lines (session + adjacent wscale pairs)
-- `_collect_snapshot(ip, shutdown_ref)` → `list[str] | None` — runs `ss -i dst <ip>`, filters to session+wscale pairs; returns `None` on shutdown
+- `_collect_snapshot(ip, shutdown_ref)` → `list[str] | None` — runs `ss -H -n -i dst <ip>`, filters to session+metrics pairs; returns `None` on shutdown
 - `_parse_session_line(line)` → `(src, dst) | None`
-- `_parse_metrics_line(line)` → `dict[str, int | str] | None`
+- `_parse_metrics_line(line)` → `dict[str, int | float | str | None] | None`
 - `_parse_snapshot(lines, ts, sessions, fmt, stream, out, csv_writer)` — merges one snapshot into `sessions` dict in-place; emits immediately for ndjson/csv or `--stream`
 - `_emit_record(ts, src, dst, metrics, fmt, out, csv_writer)` — formats and writes one record in requested format
 - `_print_sessions(sessions, out)` — formats buffered text output on exit (text format only)
@@ -34,7 +33,7 @@ Single-file script (`tcp_metrics_collector.py`). Key functions:
 
 Collection and parsing merged: each snapshot parsed immediately in the loop. `sessions` stores `(timestamp, dict)` tuples — not pre-serialised strings. Raw `ss` output never retained beyond current cycle.
 
-CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`
+CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`, `--verbose`, `--debug`
 
 ## Running Tests
 

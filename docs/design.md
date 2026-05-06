@@ -39,10 +39,11 @@ Single-file Python 3 script. One external dependency: `click` (CLI). Packaged wi
 ### Collection + Parse (merged, runs each poll iteration)
 
 ```
-_collect_snapshot(ip)
-  → subprocess.run(["ss", "-i", "dst", ip])
-  → filter: keep only (session_line, adjacent wscale_line) pairs
-  → return list[str]
+_collect_snapshot(ip, shutdown_ref)
+  → subprocess.run(["ss", "-H", "-n", "-i", "dst", ip])
+  → filter: keep only (session_line, adjacent metrics_line) pairs
+    (metric line detected by _RE_HAS_METRIC — any allowlisted key:value token)
+  → return list[str]  or  None on shutdown
 
 _parse_snapshot(lines, snapshot_time, sessions, stream, out)
   → for i, line in enumerate(lines):
@@ -72,7 +73,8 @@ Metrics are parsed and stored into `sessions` on every poll cycle. Raw `ss` outp
 | `csv` | per-sample | Header + one row per sample, always streamed |
 
 `ndjson` and `csv` always stream per-record regardless of `--stream` flag.
-Both include `ts`, `src`, `dst` fields alongside the 7 metrics.
+Both include `ts`, `src`, `dst` fields alongside the 9 metric fields
+(`cwnd`, `mss`, `ssthresh`, `unacked`, `rtt_ms`, `rttvar_ms`, `retrans_cur`, `retrans_total`, `send`).
 All modes write to stdout by default; `--output FILE` redirects to a file.
 
 ### Termination Conditions
@@ -162,6 +164,12 @@ Each session line is paired atomically with `lines[i+1]`. `_parse_session_line()
 Previously `_parse_metrics_line()` returned `None` if `"wscale"` was not in the line, and `_collect_snapshot()` filtered adjacency by `"wscale" in line`. This created a hard dependency on `wscale` appearing in ss output — a configuration detail that can vary (e.g. `ss` output without window scaling negotiated, or future ss versions).
 
 The contract is now: a line is a metrics line if and only if it contains at least one allowlisted metric token (`cwnd`, `rtt`, `mss`, `ssthresh`, `send`, `unacked`, `retrans`). Both `_parse_metrics_line()` and `_collect_snapshot()` use `_RE_HAS_METRIC` (compiled from `RE_TCP_METRIC_PARAM_LOOKUP`) for this check. `wscale` token is no longer special-cased anywhere.
+
+### 14. No `sys.exit()` in `run()` — idiomatic Click
+
+`sys.exit(0)` was called at the end of `run()` and `sys.exit(1)` on ss failure. Click manages exit codes itself; calling `sys.exit()` inside a Click command bypasses that and makes `CliRunner`-based testing awkward (the runner catches `SystemExit`, so tests worked, but it's non-idiomatic).
+
+`run()` now returns normally on success. The ss failure path raises `click.ClickException(msg)` — Click catches it, prints `Error: <msg>` to stderr, and exits with code 1.
 
 ## Regex Patterns
 

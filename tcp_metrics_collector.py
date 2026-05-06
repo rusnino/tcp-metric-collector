@@ -42,7 +42,7 @@ _debug = False
 
 
 def _log(msg: str) -> None:
-    if _verbose or _debug:
+    if _verbose:
         click.echo(f"[INFO] {msg}", file=sys.stderr)
 
 
@@ -193,7 +193,7 @@ def _emit_record(
 def _parse_snapshot(
     lines: list[str],
     snapshot_time: float,
-    sessions: dict[str, list[tuple[float, dict]]],
+    sessions: dict[str, list[tuple[float, dict[str, int | float | str | None]]]],
     fmt: str,
     stream: bool,
     out: TextIO,
@@ -224,7 +224,7 @@ def _parse_snapshot(
 
 
 def _print_sessions(
-    sessions: dict[str, list[tuple[float, dict]]],
+    sessions: dict[str, list[tuple[float, dict[str, int | float | str | None]]]],
     out: TextIO,
 ) -> None:
     for key, records in sessions.items():
@@ -271,12 +271,11 @@ def run(ip: str, duration: float | None, max_samples: int | None,
     if not is_valid_ipv4(ip):
         raise click.BadParameter(f"'{ip}' is not a valid IPv4 address.", param_hint="'-a'")
 
-    sessions: dict[str, list[tuple[float, dict]]] = defaultdict(list)
+    sessions: dict[str, list[tuple[float, dict[str, int | float | str | None]]]] = defaultdict(list)
     # Use a mutable container so signal_handler and _collect_snapshot share state
     # without needing a nonlocal closure per call.
     shutdown_ref: list[bool] = [False]
     sample_count = 0
-    start_time = time()
     start_mono = monotonic()
 
     def signal_handler(*_) -> None:
