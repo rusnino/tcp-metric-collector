@@ -84,29 +84,35 @@ With `--stream`: one line per sample as collected, no session blocks.
 ### `ndjson` — one valid JSON object per line (always streams)
 
 ```json
-{"ts": 1746518400.1, "src": "192.168.1.50:45231", "dst": "192.168.1.100:80", "cwnd": "10", "rtt": "1.234/1.198", "mss": "1460", "ssthresh": "2147483647", "send": "1.23Mbps", "unacked": "0", "retrans": "0/0"}
+{"ts": 1746518400.1, "src": "192.168.1.50:45231", "dst": "192.168.1.100:80", "cwnd": 10, "mss": 1460, "ssthresh": 2147483647, "unacked": 0, "rtt_ms": 1.234, "rttvar_ms": 0.617, "retrans_cur": 0, "retrans_total": 0, "send": "84.7Mbps"}
 ```
+
+All integer/float fields are native JSON numbers. Absent fields are `null`, not `0`.
 
 ### `csv` — header + one row per sample (always streams)
 
 ```
-ts,src,dst,cwnd,rtt,mss,ssthresh,send,unacked,retrans
-1746518400.100,192.168.1.50:45231,192.168.1.100:80,10,1.234/1.198,1460,...
+ts,src,dst,cwnd,mss,ssthresh,unacked,rtt_ms,rttvar_ms,retrans_cur,retrans_total,send
+1746518400.100,192.168.1.50:45231,192.168.1.100:80,10,1460,2147483647,0,1.234,0.617,0,0,84.7Mbps
 ```
 
 Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 
 ## Collected Metrics
 
-| Metric | Description |
-|--------|-------------|
-| `cwnd` | Congestion window (segments) |
-| `rtt` | Round-trip time (ms) |
-| `mss` | Maximum segment size (bytes) |
-| `ssthresh` | Slow-start threshold |
-| `send` | Estimated send rate |
-| `unacked` | Unacknowledged segments |
-| `retrans` | Retransmission count (current/total) |
+| Field | Type | Description |
+|-------|------|-------------|
+| `cwnd` | `int \| null` | Congestion window (segments) |
+| `mss` | `int \| null` | Maximum segment size (bytes) |
+| `ssthresh` | `int \| null` | Slow-start threshold |
+| `unacked` | `int \| null` | Unacknowledged segments |
+| `rtt_ms` | `float \| null` | Round-trip time (ms) |
+| `rttvar_ms` | `float \| null` | RTT variance (ms) — second component of `rtt:X/Y` |
+| `retrans_cur` | `int \| null` | Current retransmissions |
+| `retrans_total` | `int \| null` | Total retransmissions |
+| `send` | `string \| null` | Estimated send rate (e.g. `"84.7Mbps"`) |
+
+`null` means the field was absent in the `ss` output for that sample (not zero).
 
 ## Diagnostics
 

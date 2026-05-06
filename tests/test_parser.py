@@ -81,36 +81,72 @@ class TestParseSessionLine:
 # ---------------------------------------------------------------------------
 
 class TestParseMetricsLine:
-    def test_valid_metrics(self):
-        line = "\t cubic wscale:7,8 rto:204 rtt:1.234/0.617 mss:1460 cwnd:10 ssthresh:2147483647 send 84.7Mbps unacked:0 retrans:0/0"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert result["cwnd"] == "10"
-        assert result["rtt"] == "1.234/0.617"
-        assert result["mss"] == "1460"
-        assert result["ssthresh"] == "2147483647"
-        assert result["send"] == "84.7Mbps"
-        assert result["unacked"] == "0"
-        assert result["retrans"] == "0/0"
-
     def test_no_wscale_returns_none(self):
         line = "\t cubic rto:204 rtt:1.234/0.617 mss:1460 cwnd:10"
         assert _parse_metrics_line(line) is None
 
-    def test_missing_metric_defaults_to_zero(self):
-        line = "\t cubic wscale:7,8 rto:204 cwnd:5"
+    def test_integer_fields_typed(self):
+        line = "\t cubic wscale:7,8 rto:204 mss:1460 cwnd:10 ssthresh:2147483647 unacked:0"
         result = _parse_metrics_line(line)
         assert result is not None
-        assert result["cwnd"] == "5"
-        assert result["rtt"] == 0
-        assert result["mss"] == 0
-        assert result["retrans"] == 0
+        assert result["cwnd"] == 10
+        assert isinstance(result["cwnd"], int)
+        assert result["mss"] == 1460
+        assert isinstance(result["mss"], int)
+        assert result["ssthresh"] == 2147483647
+        assert isinstance(result["ssthresh"], int)
+        assert result["unacked"] == 0
+        assert isinstance(result["unacked"], int)
 
-    def test_send_space_normalized(self):
-        line = "\t cubic wscale:7,8 send 123Mbps cwnd:10"
+    def test_rtt_split_into_two_floats(self):
+        line = "\t cubic wscale:7,8 rtt:1.234/0.617"
         result = _parse_metrics_line(line)
         assert result is not None
-        assert result["send"] == "123Mbps"
+        assert result["rtt_ms"] == 1.234
+        assert isinstance(result["rtt_ms"], float)
+        assert result["rttvar_ms"] == 0.617
+        assert isinstance(result["rttvar_ms"], float)
+
+    def test_retrans_split_into_two_ints(self):
+        line = "\t cubic wscale:7,8 retrans:3/12"
+        result = _parse_metrics_line(line)
+        assert result is not None
+        assert result["retrans_cur"] == 3
+        assert isinstance(result["retrans_cur"], int)
+        assert result["retrans_total"] == 12
+        assert isinstance(result["retrans_total"], int)
+
+    def test_retrans_zero_zero(self):
+        line = "\t cubic wscale:7,8 retrans:0/0"
+        result = _parse_metrics_line(line)
+        assert result is not None
+        assert result["retrans_cur"] == 0
+        assert result["retrans_total"] == 0
+
+    def test_send_kept_as_string(self):
+        line = "\t cubic wscale:7,8 send 84.7Mbps"
+        result = _parse_metrics_line(line)
+        assert result is not None
+        assert result["send"] == "84.7Mbps"
+        assert isinstance(result["send"], str)
+
+    def test_absent_fields_are_none(self):
+        line = "\t cubic wscale:7,8 cwnd:5"
+        result = _parse_metrics_line(line)
+        assert result is not None
+        assert result["rtt_ms"] is None
+        assert result["rttvar_ms"] is None
+        assert result["retrans_cur"] is None
+        assert result["retrans_total"] is None
+        assert result["send"] is None
+        assert result["mss"] is None
+
+    def test_no_type_ambiguity_absent_vs_zero(self):
+        # absent field → None, not 0
+        line = "\t cubic wscale:7,8 cwnd:5"
+        result = _parse_metrics_line(line)
+        assert result is not None
+        assert result["unacked"] is None  # absent, not 0
 
     def test_non_metric_tokens_ignored(self):
         line = "\t cubic wscale:7,8 timer:on rto:204 cwnd:10 unknown:value"
@@ -118,7 +154,7 @@ class TestParseMetricsLine:
         assert result is not None
         assert "timer" not in result
         assert "unknown" not in result
-        assert result["cwnd"] == "10"
+        assert result["cwnd"] == 10
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +164,6 @@ class TestParseMetricsLine:
 class TestParseSnapshot:
     def _run(self, fixture: str, ip: str = "192.168.1.100") -> dict:
         lines = load_fixture(fixture)
-        # Filter lines as _collect_snapshot would
         filtered = [
             line for i, line in enumerate(lines)
             if ip in line or (
@@ -146,8 +181,8 @@ class TestParseSnapshot:
         assert key in sessions
         ts, metrics = sessions[key][0]
         assert ts == 1000.0
-        assert metrics["cwnd"] == "10"
-        assert metrics["mss"] == "1460"
+        assert metrics["cwnd"] == 10
+        assert metrics["mss"] == 1460
 
     def test_multiple_sessions_not_mixed(self):
         sessions = self._run("ss_multiple_sessions.txt")
@@ -156,14 +191,13 @@ class TestParseSnapshot:
         key2 = f"192.168.1.50:45232{SESSION_SEP}192.168.1.100:443"
         assert key1 in sessions
         assert key2 in sessions
-        assert sessions[key1][0][1]["cwnd"] == "10"
-        assert sessions[key2][0][1]["cwnd"] == "20"
-        assert sessions[key1][0][1]["mss"] == "1460"
-        assert sessions[key2][0][1]["mss"] == "1448"
+        assert sessions[key1][0][1]["cwnd"] == 10
+        assert sessions[key2][0][1]["cwnd"] == 20
+        assert sessions[key1][0][1]["mss"] == 1460
+        assert sessions[key2][0][1]["mss"] == 1448
 
     def test_closing_session_not_parsed(self):
         sessions = self._run("ss_closing.txt")
-        # Only ESTAB session should appear
         assert len(sessions) == 1
         key = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
         assert key in sessions
@@ -172,8 +206,8 @@ class TestParseSnapshot:
         sessions = self._run("ss_closing.txt")
         key = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
         metrics = sessions[key][0][1]
-        # ESTAB session cwnd=10, CLOSING had cwnd=5; must be 10
-        assert metrics["cwnd"] == "10"
+        # ESTAB cwnd=10, CLOSING had cwnd=5; must be 10
+        assert metrics["cwnd"] == 10
 
     def test_ipv6_session_produces_no_output(self):
         sessions = self._run("ss_ipv6.txt", ip="2001:db8::2")

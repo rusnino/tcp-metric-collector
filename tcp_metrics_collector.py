@@ -21,8 +21,16 @@ import click
 
 DEFAULT_SLEEP: float = 0.1
 SESSION_SEP = "|"
-METRIC_KEYS = ("cwnd", "rtt", "mss", "ssthresh", "send", "unacked", "retrans")
-CSV_FIELDS = ("ts", "src", "dst") + METRIC_KEYS
+
+# Typed metric fields in output. rtt split into rtt_ms/rttvar_ms; retrans split
+# into retrans_cur/retrans_total; send kept as string (unit varies: Mbps/Kbps).
+CSV_FIELDS = (
+    "ts", "src", "dst",
+    "cwnd", "mss", "ssthresh", "unacked",
+    "rtt_ms", "rttvar_ms",
+    "retrans_cur", "retrans_total",
+    "send",
+)
 
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+\:\S+)\s+(\d+\.\d+\.\d+\.\d+\:\S+)$"
 RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans)\:(\S+)"
@@ -59,15 +67,62 @@ def _parse_session_line(line: str) -> tuple[str, str] | None:
     return lookup[0][0], lookup[0][1]
 
 
-def _parse_metrics_line(line: str) -> dict[str, int | str] | None:
+def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None:
+    """Parse ss metrics line into typed fields. Returns None if not a metrics line.
+
+    Integer fields: cwnd, mss, ssthresh, unacked, retrans_cur, retrans_total
+    Float fields:   rtt_ms, rttvar_ms
+    String fields:  send  (unit varies: e.g. "84.7Mbps")
+    None:           field absent in ss output
+    """
     if "wscale" not in line:
         return None
-    parsed: dict[str, int | str] = {k: 0 for k in METRIC_KEYS}
+
+    raw: dict[str, str] = {}
     normalized = re.sub(r"\bsend ", "send:", line, count=1) if "send " in line else line
     for match in re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized):
-        parsed[match.group(1)] = match.group(2)
-    _dbg(f"parsed metrics: {parsed}")
-    return parsed
+        raw[match.group(1)] = match.group(2)
+
+    def _int(key: str) -> int | None:
+        v = raw.get(key)
+        try:
+            return int(v) if v is not None else None
+        except ValueError:
+            return None
+
+    rtt_ms: float | None = None
+    rttvar_ms: float | None = None
+    if "rtt" in raw:
+        parts = raw["rtt"].split("/")
+        try:
+            rtt_ms = float(parts[0])
+            rttvar_ms = float(parts[1]) if len(parts) > 1 else None
+        except ValueError:
+            pass
+
+    retrans_cur: int | None = None
+    retrans_total: int | None = None
+    if "retrans" in raw:
+        parts = raw["retrans"].split("/")
+        try:
+            retrans_cur = int(parts[0])
+            retrans_total = int(parts[1]) if len(parts) > 1 else None
+        except ValueError:
+            pass
+
+    result: dict[str, int | float | str | None] = {
+        "cwnd":          _int("cwnd"),
+        "mss":           _int("mss"),
+        "ssthresh":      _int("ssthresh"),
+        "unacked":       _int("unacked"),
+        "rtt_ms":        rtt_ms,
+        "rttvar_ms":     rttvar_ms,
+        "retrans_cur":   retrans_cur,
+        "retrans_total": retrans_total,
+        "send":          raw.get("send"),
+    }
+    _dbg(f"parsed metrics: {result}")
+    return result
 
 
 def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
@@ -110,7 +165,7 @@ def _emit_record(
     ts: float,
     src: str,
     dst: str,
-    metrics: dict[str, int | str],
+    metrics: dict[str, int | float | str | None],
     fmt: str,
     out: TextIO,
     csv_writer: csv.DictWriter | None,
@@ -127,7 +182,7 @@ def _emit_record(
     else:
         label = f"{src} <--> {dst}"
         fields = ", ".join(
-            f'"{k}":{v!r}' if isinstance(v, str) else f'"{k}":{v}'
+            f'"{k}":{json.dumps(v)}'
             for k, v in metrics.items()
         )
         out.write(f"{ts:.3f} [{label}] {fields}\n")
@@ -179,10 +234,7 @@ def _print_sessions(
         out.write("\n")
         out.write(f"======== START TCP SESSION ({label}) ========\n")
         for ts, metrics in records:
-            fields = ", ".join(
-                f'"{k}":{v!r}' if isinstance(v, str) else f'"{k}":{v}'
-                for k, v in metrics.items()
-            )
+            fields = ", ".join(f'"{k}":{json.dumps(v)}' for k, v in metrics.items())
             out.write(f"{ts:.3f} - {fields}\n")
         out.write(f"======== END TCP SESSION ({label}) ========\n")
         out.write("\n")
@@ -190,7 +242,7 @@ def _print_sessions(
 
 
 @click.command()
-@click.version_option(version="0.2.0", prog_name="tcp-metric-collector")
+@click.version_option(version="0.3.0", prog_name="tcp-metric-collector")
 @click.option("-a", "ip", required=True, help="Destination IPv4 address to monitor")
 @click.option("--duration", type=float, default=None,
               help="Stop collecting after N seconds.")
