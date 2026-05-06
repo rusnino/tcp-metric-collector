@@ -13,7 +13,7 @@ import signal
 import subprocess
 import sys
 from time import sleep, time
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 
 import click
 
@@ -31,7 +31,8 @@ def is_valid_ip(ip: str) -> bool:
 
 
 def print_tcp_metrics(tcp_metrics: List[Tuple[float, str]]) -> None:
-    print_data: Dict[str, Any] = {"curr_session": ""}
+    sessions: Dict[str, List[Tuple[float, str]]] = {}
+    curr_session: str = ""
 
     def _parse_tcp_metrics(metrics: str) -> str:
         parsed_metrics = {
@@ -62,32 +63,30 @@ def print_tcp_metrics(tcp_metrics: List[Tuple[float, str]]) -> None:
                 if not lookup_tcp_session:
                     continue
 
-                tcp_session_key = f"{lookup_tcp_session[0][0]}_{lookup_tcp_session[0][1]}"
-                print_data["curr_session"] = tcp_session_key
-                if tcp_session_key not in print_data:
-                    print_data[tcp_session_key] = {"metrics": []}
+                curr_session = f"{lookup_tcp_session[0][0]}_{lookup_tcp_session[0][1]}"
+                if curr_session not in sessions:
+                    sessions[curr_session] = []
 
-            if "wscale" in line and print_data["curr_session"]:
+            if "wscale" in line and curr_session:
                 line = line.replace("send ", "send:") if "send " in line else line
-                tcp_session_metrics = _parse_tcp_metrics(line)
-                curr_session = print_data["curr_session"]
-                print_data[curr_session]["metrics"].append((snapshot_time, tcp_session_metrics))
+                sessions[curr_session].append((snapshot_time, _parse_tcp_metrics(line)))
 
-    for tcp, data in print_data.items():
-        if tcp == "curr_session":
-            continue
-        if not data["metrics"]:
+    for session_key, metrics in sessions.items():
+        if not metrics:
             continue
 
+        label = session_key.replace("_", " <--> ")
         click.echo()
-        click.echo(f"======== START TCP SESSION ({tcp.replace('_', ' <--> ')}) ========")
-        for ts, metric in data["metrics"]:
-            click.echo(f"{ts:.3f} - {metric[1:-1]}")
-        click.echo(f"======== END TCP SESSION ({tcp.replace('_', ' <--> ')}) ========")
+        click.echo(f"======== START TCP SESSION ({label}) ========")
+        for ts, metric in metrics:
+            inner = metric[1:-1]
+            click.echo(f"{ts:.3f} - {inner}")
+        click.echo(f"======== END TCP SESSION ({label}) ========")
         click.echo()
 
 
 @click.command()
+@click.version_option(version="0.1.0", prog_name="tcp-metric-collector")
 @click.option("-a", "ip", required=True, help="Destination IP address to monitor")
 def run(ip: str) -> None:
     """Collect TCP metrics for all sessions to a destination IP address."""
