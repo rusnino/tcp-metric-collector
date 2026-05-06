@@ -34,6 +34,8 @@ CSV_FIELDS = (
 
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+\:\S+)\s+(\d+\.\d+\.\d+\.\d+\:\S+)$"
 RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans)\:(\S+)"
+# Compiled fast-check: is a line a ss metrics line at all?
+_RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP)
 
 _verbose = False
 _debug = False
@@ -75,12 +77,13 @@ def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None
     String fields:  send  (unit varies: e.g. "84.7Mbps")
     None:           field absent in ss output
     """
-    if "wscale" not in line:
+    normalized = re.sub(r"\bsend ", "send:", line, count=1) if "send " in line else line
+    matches = list(re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized))
+    if not matches:
         return None
 
     raw: dict[str, str] = {}
-    normalized = re.sub(r"\bsend ", "send:", line, count=1) if "send " in line else line
-    for match in re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized):
+    for match in matches:
         raw[match.group(1)] = match.group(2)
 
     def _int(key: str) -> int | None:
@@ -154,7 +157,7 @@ def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
     for i, line in enumerate(raw):
         if ip in line:
             kept.append(line)
-        elif "wscale" in line and i > 0 and ip in raw[i - 1]:
+        elif _RE_HAS_METRIC.search(line) and i > 0 and ip in raw[i - 1]:
             kept.append(line)
 
     _dbg(f"kept {len(kept)} lines after filter")

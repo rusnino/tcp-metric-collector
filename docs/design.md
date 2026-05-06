@@ -157,6 +157,12 @@ Fix: `next_tick` advances by exactly `DEFAULT_SLEEP` each iteration. `sleep(max(
 
 Each session line is paired atomically with `lines[i+1]`. `_parse_session_line()` and `_parse_metrics_line()` each return `None` on skip conditions. No `curr_session` state persists — a skipped session line cannot cause metrics to leak into a previous session.
 
+### 13. Metric line detection by content, not by wscale token
+
+Previously `_parse_metrics_line()` returned `None` if `"wscale"` was not in the line, and `_collect_snapshot()` filtered adjacency by `"wscale" in line`. This created a hard dependency on `wscale` appearing in ss output — a configuration detail that can vary (e.g. `ss` output without window scaling negotiated, or future ss versions).
+
+The contract is now: a line is a metrics line if and only if it contains at least one allowlisted metric token (`cwnd`, `rtt`, `mss`, `ssthresh`, `send`, `unacked`, `retrans`). Both `_parse_metrics_line()` and `_collect_snapshot()` use `_RE_HAS_METRIC` (compiled from `RE_TCP_METRIC_PARAM_LOOKUP`) for this check. `wscale` token is no longer special-cased anywhere.
+
 ## Regex Patterns
 
 | Pattern | Purpose |

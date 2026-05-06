@@ -8,6 +8,7 @@ import pytest
 
 from tcp_metrics_collector import (
     SESSION_SEP,
+    _RE_HAS_METRIC,
     _parse_metrics_line,
     _parse_session_line,
     _parse_snapshot,
@@ -81,8 +82,16 @@ class TestParseSessionLine:
 # ---------------------------------------------------------------------------
 
 class TestParseMetricsLine:
-    def test_no_wscale_returns_none(self):
+    def test_no_wscale_but_has_metrics_parsed(self):
+        # wscale absence no longer gates parsing — regex matches decide
         line = "\t cubic rto:204 rtt:1.234/0.617 mss:1460 cwnd:10"
+        result = _parse_metrics_line(line)
+        assert result is not None
+        assert result["cwnd"] == 10
+        assert result["rtt_ms"] == 1.234
+
+    def test_no_metric_tokens_returns_none(self):
+        line = "\t cubic rto:204 ato:40 rcv_rtt:1 rcv_space:29200"
         assert _parse_metrics_line(line) is None
 
     def test_integer_fields_typed(self):
@@ -167,7 +176,7 @@ class TestParseSnapshot:
         filtered = [
             line for i, line in enumerate(lines)
             if ip in line or (
-                "wscale" in line and i > 0 and ip in lines[i - 1]
+                _RE_HAS_METRIC.search(line) and i > 0 and ip in lines[i - 1]
             )
         ]
         sessions: dict = defaultdict(list)
@@ -213,6 +222,17 @@ class TestParseSnapshot:
         sessions = self._run("ss_ipv6.txt", ip="2001:db8::2")
         assert len(sessions) == 0
 
-    def test_no_wscale_produces_no_output(self):
+    def test_no_wscale_still_parsed_if_metrics_present(self):
+        # ss_no_wscale.txt has cwnd/rtt/etc but no wscale token — must still parse
         sessions = self._run("ss_no_wscale.txt")
+        assert len(sessions) == 1
+        key = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
+        assert key in sessions
+        metrics = sessions[key][0][1]
+        assert metrics["cwnd"] == 10
+        assert metrics["rtt_ms"] == 1.234
+
+    def test_no_metric_tokens_produces_no_output(self):
+        # ss_no_metrics.txt has a metrics-style line but zero allowlisted tokens
+        sessions = self._run("ss_no_metrics.txt")
         assert len(sessions) == 0
