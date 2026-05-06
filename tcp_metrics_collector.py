@@ -25,10 +25,9 @@ RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+\:\S+)\s+(\
 RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans)\:(\S+)"
 
 
-def is_valid_ip(ip: str) -> bool:
+def is_valid_ipv4(ip: str) -> bool:
     try:
-        ipaddress.ip_address(ip)
-        return True
+        return isinstance(ipaddress.ip_address(ip), ipaddress.IPv4Address)
     except ValueError:
         return False
 
@@ -87,11 +86,11 @@ def print_tcp_metrics(tcp_metrics: list[tuple[float, str]]) -> None:
 
 @click.command()
 @click.version_option(version="0.1.0", prog_name="tcp-metric-collector")
-@click.option("-a", "ip", required=True, help="Destination IP address to monitor")
+@click.option("-a", "ip", required=True, help="Destination IPv4 address to monitor")
 def run(ip: str) -> None:
-    """Collect TCP metrics for all sessions to a destination IP address."""
-    if not is_valid_ip(ip):
-        raise click.BadParameter(f"'{ip}' is not a valid IP address.", param_hint="'-a'")
+    """Collect TCP metrics for all sessions to a destination IPv4 address."""
+    if not is_valid_ipv4(ip):
+        raise click.BadParameter(f"'{ip}' is not a valid IPv4 address.", param_hint="'-a'")
 
     tcp_metrics: list[tuple[float, str]] = []
     shutdown = False

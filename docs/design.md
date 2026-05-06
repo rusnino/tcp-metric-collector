@@ -64,9 +64,9 @@ tcp_metrics[]  (list of (float, str) tuples)
 
 ### Session Key Format
 
-`{src_ip}:{src_port}_{dst_ip}:{dst_port}`
+`{src_ip}:{src_port}|{dst_ip}:{dst_port}`
 
-Used as dict key in `print_data`. `curr_session` pointer tracks current session while iterating lines.
+`|` used as separator (constant `SESSION_SEP`) — cannot appear in an IPv4 address or port number, making the key unambiguous. Used as dict key in `sessions`. `curr_session` string tracks current session while iterating lines.
 
 ## Key Design Decisions
 
@@ -86,9 +86,11 @@ Simplifies collection loop. Avoids parse overhead during sampling window. Trade-
 
 Each sample stores `time()` at collection time. Accurate for correlation with external events. Previous versions used synthetic `sample_count * DEFAULT_SLEEP` which drifted if `ss` call exceeded 100ms.
 
-### 5. `ipaddress` module for IP validation
+### 5. IPv4-only validation via `is_valid_ipv4()`
 
-Replaces hand-rolled regex that accepted out-of-range octets (e.g. `999.0.0.1`). `ipaddress.ip_address()` from stdlib correctly validates both IPv4 and IPv6.
+`ipaddress.ip_address()` accepts both IPv4 and IPv6. Previous `is_valid_ip()` accepted IPv6 addresses silently — the CLI would start collecting but `RE_TCP_SESSION_LOOKUP` only matches `\d+\.\d+\.\d+\.\d+` so no sessions would ever be found. User would see no output with no error.
+
+Fixed by checking `isinstance(..., ipaddress.IPv4Address)`. IPv6 input now fails immediately with a clear error: `'::1' is not a valid IPv4 address.` The function is renamed `is_valid_ipv4()` to make the constraint explicit. The `--help` text and docstring also say "IPv4".
 
 ### 6. SIGTERM handling
 
@@ -115,6 +117,6 @@ Both `SIGINT` (Ctrl+C) and `SIGTERM` (`kill`) now trigger graceful shutdown and 
 
 ## Known Limitations
 
-- **IPv4 only**: `RE_TCP_SESSION_LOOKUP` matches `\d+\.\d+\.\d+\.\d+` — IPv6 sessions silently skipped.
+- **IPv4 only**: enforced at input by `is_valid_ipv4()`. IPv6 addresses are rejected with an explicit error at startup rather than silently producing no output.
 - **Memory**: `tcp_metrics[]` grows unbounded. Could rotate or stream-parse for long captures.
 - **Output format**: JSON per line is human-readable but not ideal for machine ingestion. Could output NDJSON or CSV.

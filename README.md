@@ -1,6 +1,6 @@
 # TCP Metric Collector
 
-Collects TCP metrics per destination IP on Linux. Samples `ss` socket statistics at 100ms intervals, prints per-session metrics on exit.
+Collects TCP metrics per destination IPv4 address on Linux. Samples `ss` socket statistics at 100ms intervals, prints per-session metrics on exit.
 
 ## Requirements
 
@@ -62,6 +62,6 @@ Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 
 ## Known Limitations
 
-- IPv4 only (session regex does not match IPv6)
+- **IPv4 only** — `is_valid_ipv4()` rejects IPv6 at input; `RE_TCP_SESSION_LOOKUP` only matches dotted-decimal addresses
 - All collected samples held in memory; long runs on busy hosts may consume significant RAM
 - `CLOSING` state sessions skipped
