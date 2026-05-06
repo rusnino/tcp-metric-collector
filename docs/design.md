@@ -8,11 +8,12 @@ Passive TCP performance monitoring tool. Captures kernel-level TCP metrics for a
 
 - Python 3.7+
 - Linux with `iproute2` installed
+- `click>=8.1.8`
 - [uv](https://docs.astral.sh/uv/) (optional, recommended for running)
 
 ## Architecture
 
-Single-file Python 3 script. No external dependencies beyond stdlib. Packaged with `uv` (`pyproject.toml`) for reproducible execution and CLI install.
+Single-file Python 3 script. One external dependency: `click` (CLI). Packaged with `uv` (`pyproject.toml`) for reproducible execution and CLI install.
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -93,9 +94,9 @@ Replaces hand-rolled regex that accepted out-of-range octets (e.g. `999.0.0.1`).
 
 Both `SIGINT` (Ctrl+C) and `SIGTERM` (`kill`) now trigger graceful shutdown and metric printout. Previous version silently exited on SIGTERM without printing results.
 
-### 7. `-a` argument is required
+### 7. `click` instead of `argparse`
 
-`required=True` on argparse argument. Previous version used a default of `0.0.0.0` and printed a manual error message. Argparse now handles the missing-argument error.
+`click` replaces `argparse` for CLI parsing. `@click.command()` + `@click.option()` decorators on `run()` make the function the entrypoint directly — no separate `args = parser.parse_args()` call. IP validation failure raises `click.BadParameter` which formats the error consistently with click's own error output. `click.echo()` replaces `print()` throughout for correct stdout/stderr routing (`err=True` for errors). The `run()` function docstring becomes the `--help` description automatically.
 
 ### 8. uv / uvx packaging
 

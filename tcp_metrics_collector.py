@@ -1,12 +1,11 @@
 # /// script
 # requires-python = ">=3.7"
-# dependencies = []
+# dependencies = ["click>=8.1.8"]
 # ///
 #
 # TCP Metrics Collector
 #
 
-import argparse
 import ipaddress
 import json
 import re
@@ -15,6 +14,8 @@ import subprocess
 import sys
 from time import sleep, time
 from typing import Any, Dict, List, Tuple
+
+import click
 
 DEFAULT_SLEEP: float = 0.1
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+\:\S+)\s+(\d+\.\d+\.\d+\.\d+\:\S+)$"
@@ -78,23 +79,20 @@ def print_tcp_metrics(tcp_metrics: List[Tuple[float, str]]) -> None:
         if not data["metrics"]:
             continue
 
-        print()
-        print(f"======== START TCP SESSION ({tcp.replace('_', ' <--> ')}) ========")
+        click.echo()
+        click.echo(f"======== START TCP SESSION ({tcp.replace('_', ' <--> ')}) ========")
         for ts, metric in data["metrics"]:
-            print(f"{ts:.3f} - {metric[1:-1]}")
-        print(f"======== END TCP SESSION ({tcp.replace('_', ' <--> ')}) ========")
-        print()
+            click.echo(f"{ts:.3f} - {metric[1:-1]}")
+        click.echo(f"======== END TCP SESSION ({tcp.replace('_', ' <--> ')}) ========")
+        click.echo()
 
 
-def run() -> None:
-    parser = argparse.ArgumentParser(description="TCP Metrics Collector")
-    parser.add_argument("-a", action="store", dest="ip", required=True, type=str,
-                        help="Destination IP address to monitor")
-    args = parser.parse_args()
-
-    if not is_valid_ip(args.ip):
-        print(f"Error: '{args.ip}' is not a valid IP address.")
-        sys.exit(1)
+@click.command()
+@click.option("-a", "ip", required=True, help="Destination IP address to monitor")
+def run(ip: str) -> None:
+    """Collect TCP metrics for all sessions to a destination IP address."""
+    if not is_valid_ip(ip):
+        raise click.BadParameter(f"'{ip}' is not a valid IP address.", param_hint="'-a'")
 
     tcp_metrics: List[Tuple[float, str]] = []
 
@@ -105,25 +103,25 @@ def run() -> None:
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    print(f"INFO: Collecting TCP metrics every {DEFAULT_SLEEP}s. Press Ctrl+C to stop.")
+    click.echo(f"INFO: Collecting TCP metrics every {DEFAULT_SLEEP}s. Press Ctrl+C to stop.")
 
     while True:
         result = subprocess.run(
-            ["ss", "-i", "dst", args.ip],
+            ["ss", "-i", "dst", ip],
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
-            print(f"Error: ss failed: {result.stderr.strip()}", file=sys.stderr)
+            click.echo(f"Error: ss failed: {result.stderr.strip()}", err=True)
             sys.exit(1)
 
         # Preserve adjacency: keep session line + immediately following metrics line
         raw_lines = result.stdout.splitlines()
         kept: List[str] = []
         for i, line in enumerate(raw_lines):
-            if args.ip in line:
+            if ip in line:
                 kept.append(line)
-            elif "wscale" in line and i > 0 and args.ip in raw_lines[i - 1]:
+            elif "wscale" in line and i > 0 and ip in raw_lines[i - 1]:
                 kept.append(line)
 
         tcp_metrics.append((time(), "\n".join(kept)))

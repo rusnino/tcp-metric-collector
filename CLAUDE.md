@@ -17,7 +17,7 @@ python3 tcp_metrics_collector.py -a <destination_ip>
 
 Requires Linux with `ss` command available (iproute2) and Python 3.7+. Must run on sender side.
 
-Project uses `uv` for environment management (`pyproject.toml`). No external dependencies — stdlib only.
+Project uses `uv` for environment management (`pyproject.toml`). One external dependency: `click>=8.1.8`.
 
 ## Architecture
 
