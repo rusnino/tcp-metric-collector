@@ -182,15 +182,12 @@ class TestParseMetricsLine:
 
 class TestParseSnapshot:
     def _run(self, fixture: str, ip: str = "192.168.1.100") -> dict:
-        lines = load_fixture(fixture)
-        filtered = [
-            line for i, line in enumerate(lines)
-            if ip in line or (
-                _RE_HAS_METRIC.search(line) and i > 0 and ip in lines[i - 1]
-            )
-        ]
+        """Run through the full production pipeline: _collect_snapshot → _parse_snapshot."""
+        with patch("subprocess.run", return_value=_make_ss_result(fixture)):
+            pairs = _collect_snapshot(ip, [False])
         sessions: dict = defaultdict(list)
-        _parse_snapshot(filtered, 1000.0, sessions, "text", False, io.StringIO(), None)
+        if pairs:
+            _parse_snapshot(pairs, 1000.0, sessions, "text", False, io.StringIO(), None)
         return dict(sessions)
 
     def test_single_session_parsed(self):
