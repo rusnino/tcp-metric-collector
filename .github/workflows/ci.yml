@@ -29,3 +29,9 @@ jobs:
 
       - name: Run tests
         run: uv run --python ${{ matrix.python-version }} pytest --tb=short -q
+
+      - name: Build wheel
+        run: uv build --python ${{ matrix.python-version }}
+
+      - name: Smoke-test wheel entrypoint
+        run: uvx --from dist/*.whl tcp-metric-collector --version
