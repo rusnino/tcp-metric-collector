@@ -296,7 +296,7 @@ class TestCollectSnapshot:
         records = self._run("::1", socks)
         assert records is not None
         assert len(records) == 1
-        assert records[0][1] == "::1:80"
+        assert records[0][1] == "[::1]:80"
 
     def test_ipv6_non_canonical_input_matches(self):
         # Kernel may return compressed "2001:db8::1"; user may pass expanded form.
@@ -313,7 +313,7 @@ class TestCollectSnapshot:
         socks = [_make_sock("2001:db8::2", 45231, "2001:db8::1", 80)]
         records = self._run("2001:db8::1", socks)
         assert records is not None
-        assert records[0][0] == "2001:db8::2:45231"  # src:port
+        assert records[0][0] == "[2001:db8::2]:45231"  # [addr]:port RFC 2732
 
 
 # ---------------------------------------------------------------------------

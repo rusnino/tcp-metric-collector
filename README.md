@@ -111,6 +111,8 @@ ts,src,dst,cwnd,mss,ssthresh,unacked,rtt_ms,rttvar_ms,retrans_cur,retrans_total,
 
 Absent fields in CSV are **empty cells** (standard RFC 4180 behavior via Python `csv.DictWriter`), not the string `"null"`. A consumer expecting `null` should treat empty cell as absent.
 
+IPv6 `src`/`dst` fields use RFC 2732 bracket notation (`[2001:db8::1]:80`) so port is always unambiguously the last component after the final `:`.
+
 Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 
 ## Collected Metrics

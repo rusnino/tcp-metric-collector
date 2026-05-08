@@ -67,6 +67,13 @@ MetricDict = dict[str, int | float | str | None]
 SnapshotRecord = tuple[str, str, MetricDict]  # (src, dst, metrics)
 
 
+def _format_addr(ip: str, port: int) -> str:
+    """Format IP:port unambiguously. IPv6 uses [addr]:port (RFC 2732)."""
+    if ":" in ip:
+        return f"[{ip}]:{port}"
+    return f"{ip}:{port}"
+
+
 def _log(msg: str) -> None:
     if _verbose:
         click.echo(f"[INFO] {msg}", file=sys.stderr)
@@ -209,8 +216,8 @@ def _collect_snapshot(
         sport: int = sock.get("idiag_sport", 0)
         dport: int = sock.get("idiag_dport", 0)
 
-        src = f"{src_canonical}:{sport}"
-        dst = f"{dst_canonical}:{dport}"
+        src = _format_addr(src_canonical, sport)
+        dst = _format_addr(dst_canonical, dport)
 
         # Use get_attr() — attrs is a list of (name, value) tuples, not a dict
         tcp_info = dict(sock.get_attr("INET_DIAG_INFO") or {})
