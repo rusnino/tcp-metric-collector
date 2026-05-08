@@ -180,10 +180,19 @@ class TestTextFormat:
         assert len(call_count) == 1
 
     def test_duration_stops_collection(self, runner):
-        # --duration 0.001 (minimum) should cause the loop to exit after one sample
-        with patch("tcp_metrics_collector._collect_snapshot", side_effect=_mock_one_shot(_SINGLE_SESSION_LINES)):
+        # --duration 0.001 (minimum): duration check fires at loop top before second
+        # collection, so exactly one sample is collected. Previously the check ran
+        # after collect+parse, allowing an extra sample past the deadline.
+        call_count = []
+
+        def _collect(ip, shutdown_ref, timeout=None):
+            call_count.append(1)
+            return _SINGLE_SESSION_LINES
+
+        with patch("tcp_metrics_collector._collect_snapshot", side_effect=_collect):
             result = runner.invoke(run, ["-a", "192.168.1.100", "--duration", "0.001"])
         assert result.exit_code == 0
+        assert len(call_count) == 1
 
 
 # ---------------------------------------------------------------------------

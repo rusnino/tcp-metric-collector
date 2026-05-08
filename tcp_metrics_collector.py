@@ -353,6 +353,12 @@ def run(ip: str, duration: float | None, max_samples: int | None,
 
         next_tick = monotonic()
         while not shutdown_ref[0]:
+            # Check duration before starting a new collection so we never collect
+            # past the deadline even if ss is slow or the previous sample overran.
+            if duration is not None and monotonic() - start_mono >= duration:
+                _log(f"--duration {duration}s reached, stopping")
+                break
+
             next_tick += DEFAULT_SLEEP
 
             snapshot_time = time()  # capture before ss runs — timestamp reflects sample start
@@ -373,9 +379,6 @@ def run(ip: str, duration: float | None, max_samples: int | None,
 
             if max_samples is not None and sample_count >= max_samples:
                 _log(f"--max-samples {max_samples} reached, stopping")
-                break
-            if duration is not None and monotonic() - start_mono >= duration:
-                _log(f"--duration {duration}s reached, stopping")
                 break
 
             wait = next_tick - monotonic()
