@@ -235,14 +235,14 @@ def _parse_snapshot(
     out: TextIO,
     csv_writer: csv.DictWriter | None,
 ) -> None:
+    # lines from _collect_snapshot are guaranteed pairs: [session, metrics, session, metrics, ...]
     found = 0
-    for i, line in enumerate(lines):
-        session = _parse_session_line(line)
+    for i in range(0, len(lines) - 1, 2):
+        session = _parse_session_line(lines[i])
         if session is None:
             continue
 
-        next_line = lines[i + 1] if i + 1 < len(lines) else ""
-        metrics = _parse_metrics_line(next_line)
+        metrics = _parse_metrics_line(lines[i + 1])
         if metrics is None:
             _dbg(f"no metrics line after session {session}")
             continue

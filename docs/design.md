@@ -163,9 +163,11 @@ Current schema:
 
 Fix: `next_tick` advances by exactly `DEFAULT_SLEEP` each iteration. `sleep(max(0, next_tick - monotonic()))` sleeps only the remaining budget. If ss overruns, sleep is skipped. `monotonic()` used for scheduling; `time()` for output timestamps (wall-clock, needed for external correlation).
 
-### 12. Pair-based parsing — no cross-line state
+### 12. Pair-based pipeline — filter and parser both step by 2
 
-Each session line is paired atomically with `lines[i+1]`. `_parse_session_line()` and `_parse_metrics_line()` each return `None` on skip conditions. No `curr_session` state persists — a skipped session line cannot cause metrics to leak into a previous session.
+`_collect_snapshot()` produces `lines` as guaranteed pairs: `[session₀, metrics₀, session₁, metrics₁, …]`. Only complete pairs are kept — session lines without an adjacent metrics line are discarded at filter time.
+
+`_parse_snapshot()` steps over `lines` in strides of 2 (`range(0, len(lines)-1, 2)`), accessing `lines[i]` (session) and `lines[i+1]` (metrics) without bounds checks. No `curr_session` state persists. A session line that fails `_parse_session_line()` skips the pair; no metric can leak to a different session.
 
 ### 13. Metric line detection by content, not by wscale token
 

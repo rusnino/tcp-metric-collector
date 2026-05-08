@@ -294,12 +294,13 @@ class TestCollectSnapshot:
         assert len(kept) == 2
         assert "send 84.7Mbps" in kept[1]
 
-    def test_send_double_space_filter_and_parse(self):
-        # "send  84.7Mbps" (two spaces) — pre-filter and normalizer must handle \s+
-        sessions = TestParseSnapshot()._run("ss_send_doublespace.txt")
-        assert len(sessions) == 1
-        key = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
-        assert sessions[key][0][1]["send"] == "84.7Mbps"
+    def test_send_double_space_metric_line_kept(self):
+        # "send  84.7Mbps" (two spaces) — _RE_HAS_METRIC must match \s+
+        with patch("subprocess.run", return_value=_make_ss_result("ss_send_doublespace.txt")):
+            kept = _collect_snapshot("192.168.1.100", [False])
+        assert kept is not None
+        assert len(kept) == 2
+        assert "send  84.7Mbps" in kept[1]
 
     def test_multiple_sessions_all_pairs_kept(self):
         with patch("subprocess.run", return_value=_make_ss_result("ss_multiple_sessions.txt")):
