@@ -3,13 +3,14 @@
 import csv
 import io
 import json
+import tomllib
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
-from tcp_metrics_collector import run
+from tcp_metrics_collector import _VERSION, run
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -101,6 +102,18 @@ class TestInputValidation:
     def test_invalid_format_exits_2(self, runner):
         result = runner.invoke(run, ["-a", "1.2.3.4", "--format", "xml"])
         assert result.exit_code == 2
+
+    def test_version_matches_pyproject(self, runner):
+        pyproject = tomllib.loads(
+            (Path(__file__).parent.parent / "pyproject.toml").read_text()
+        )
+        expected = pyproject["project"]["version"]
+        assert _VERSION == expected, (
+            f"_VERSION={_VERSION!r} != pyproject.toml version={expected!r}; "
+            "update pyproject.toml or bump _VERSION source"
+        )
+        result = runner.invoke(run, ["--version"])
+        assert expected in result.output
 
 
 # ---------------------------------------------------------------------------

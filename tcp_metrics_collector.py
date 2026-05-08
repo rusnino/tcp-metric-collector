@@ -14,8 +14,14 @@ import signal
 import subprocess
 import sys
 from collections import defaultdict
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from time import monotonic, sleep, time
 from typing import TextIO
+
+try:
+    _VERSION = _pkg_version("tcp-metric-collector")
+except PackageNotFoundError:
+    _VERSION = "unknown"  # running as bare script without package install
 
 import click
 
@@ -248,7 +254,7 @@ def _print_sessions(
 
 
 @click.command()
-@click.version_option(version="0.3.0", prog_name="tcp-metric-collector")
+@click.version_option(version=_VERSION, prog_name="tcp-metric-collector")
 @click.option("-a", "ip", required=True, help="Destination IPv4 address to monitor")
 @click.option("--duration", type=click.FloatRange(min=0.001), default=None,
               help="Stop collecting after N seconds (must be > 0).")
