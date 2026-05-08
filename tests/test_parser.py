@@ -232,6 +232,15 @@ class TestParseSnapshot:
         assert metrics["cwnd"] == 10
         assert metrics["rtt_ms"] == 1.234
 
+    def test_send_only_metrics_line_not_filtered(self):
+        # Line with only "send VALUE" (space-separated) must survive _collect_snapshot
+        # filter and be parsed. Previously _RE_HAS_METRIC missed it (matched key:value only).
+        sessions = self._run("ss_send_only.txt")
+        assert len(sessions) == 1
+        key = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
+        assert key in sessions
+        assert sessions[key][0][1]["send"] == "84.7Mbps"
+
     def test_no_metric_tokens_produces_no_output(self):
         # ss_no_metrics.txt has a metrics-style line but zero allowlisted tokens
         sessions = self._run("ss_no_metrics.txt")

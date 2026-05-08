@@ -35,7 +35,9 @@ CSV_FIELDS = (
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+\:\S+)\s+(\d+\.\d+\.\d+\.\d+\:\S+)$"
 RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans)\:(\S+)"
 # Compiled fast-check: is a line a ss metrics line at all?
-_RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP)
+# Matches standard key:value tokens OR "send VALUE" (space-separated in ss output).
+# Must stay aligned with _parse_metrics_line normalization.
+_RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP + r"|\bsend \S")
 
 _verbose = False
 _debug = False
