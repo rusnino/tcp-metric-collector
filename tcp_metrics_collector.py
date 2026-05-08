@@ -50,6 +50,10 @@ _INET_DIAG_INFO_EXT: int = 1 << 1
 # TCP state value for ESTABLISHED (from linux/tcp.h TCP_ESTABLISHED = 1)
 _TCP_ESTABLISHED: int = 1
 
+# Kernel sets tcpi_snd_ssthresh = TCP_INFINITE_SSTHRESH when slow-start has
+# not ended yet. Exposing this as a number is misleading; return None instead.
+_TCP_INFINITE_SSTHRESH: int = 0x7FFFFFFF
+
 # Typed metric fields in output. rtt split into rtt_ms/rttvar_ms; retrans split
 # into retrans_cur/retrans_total; send is a derived rate string.
 CSV_FIELDS = (
@@ -115,7 +119,11 @@ def _extract_metrics(tcp_info: dict) -> MetricDict:
     rttvar_us: int = tcp_info.get("tcpi_rttvar", 0) or 0
     cwnd: int | None = tcp_info.get("tcpi_snd_cwnd")
     mss: int | None = tcp_info.get("tcpi_snd_mss")
-    ssthresh: int | None = tcp_info.get("tcpi_snd_ssthresh")
+    ssthresh_raw: int | None = tcp_info.get("tcpi_snd_ssthresh")
+    ssthresh: int | None = (
+        None if ssthresh_raw is None or ssthresh_raw >= _TCP_INFINITE_SSTHRESH
+        else ssthresh_raw
+    )
     unacked: int | None = tcp_info.get("tcpi_unacked")
 
     rtt_ms: float | None = rtt_us / 1000.0 if rtt_us else None

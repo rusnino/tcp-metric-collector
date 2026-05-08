@@ -10,6 +10,7 @@ import pytest
 from tcp_metrics_collector import (
     SESSION_SEP,
     _TCP_ESTABLISHED,
+    _TCP_INFINITE_SSTHRESH,
     _collect_snapshot,
     _extract_metrics,
     _format_addr,
@@ -105,13 +106,22 @@ class TestExtractMetrics:
         return base
 
     def test_integer_fields_typed(self):
-        m = _extract_metrics(self._full_tcp_info())
+        m = _extract_metrics(self._full_tcp_info(tcpi_snd_ssthresh=512))
         assert m["cwnd"] == 10
         assert isinstance(m["cwnd"], int)
         assert m["mss"] == 1460
         assert isinstance(m["mss"], int)
-        assert m["ssthresh"] == 2147483647
+        assert m["ssthresh"] == 512
         assert m["unacked"] == 0
+
+    def test_ssthresh_infinite_returns_none(self):
+        # Kernel uses TCP_INFINITE_SSTHRESH=0x7FFFFFFF when slow-start hasn't ended
+        m = _extract_metrics(self._full_tcp_info(tcpi_snd_ssthresh=_TCP_INFINITE_SSTHRESH))
+        assert m["ssthresh"] is None
+
+    def test_ssthresh_real_value_preserved(self):
+        m = _extract_metrics(self._full_tcp_info(tcpi_snd_ssthresh=87380))
+        assert m["ssthresh"] == 87380
 
     def test_rtt_converted_from_microseconds(self):
         m = _extract_metrics(self._full_tcp_info(tcpi_rtt=1234, tcpi_rttvar=617))
