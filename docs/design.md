@@ -45,7 +45,7 @@ _collect_snapshot(ip, shutdown_ref)
     (metric line detected by _RE_HAS_METRIC — any allowlisted key:value token)
   → return list[str]  or  None on shutdown
 
-_parse_snapshot(lines, snapshot_time, sessions, stream, out)
+_parse_snapshot(lines, snapshot_time, sessions, fmt, stream, out, csv_writer)
   → for i, line in enumerate(lines):
       session_key = _parse_session_line(line)       # None → skip
       metrics     = _parse_metrics_line(lines[i+1]) # None → skip

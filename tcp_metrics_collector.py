@@ -29,7 +29,8 @@ except PackageNotFoundError:
     try:
         import pathlib as _pathlib
         _pyproject = _pathlib.Path(__file__).with_name("pyproject.toml")
-        _m = re.search(r'^version\s*=\s*"([^"]+)"', _pyproject.read_text(), re.MULTILINE)
+        _m = re.search(r'^\[project\].*?^version\s*=\s*"([^"]+)"',
+                       _pyproject.read_text(), re.MULTILINE | re.DOTALL)
         _VERSION = _m.group(1) if _m else "unknown"
         del _pathlib, _pyproject, _m
     except Exception:
@@ -78,7 +79,7 @@ def is_valid_ipv4(ip: str) -> bool:
 
 def _parse_session_line(line: str) -> tuple[str, str] | None:
     if "tcp " not in line or "CLOSING" in line:
-        _dbg(f"session line skipped: {line.strip()!r}")
+        _dbg(f"session line not TCP/CLOSING: {line.strip()!r}")
         return None
     m = re.search(RE_TCP_SESSION_LOOKUP, line.strip())
     if not m:

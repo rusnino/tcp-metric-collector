@@ -33,7 +33,9 @@ Single-file script (`tcp_metrics_collector.py`). Key functions:
 
 Collection and parsing merged: each snapshot parsed immediately in the loop. `sessions` stores `(timestamp, dict)` tuples — not pre-serialised strings. Raw `ss` output never retained beyond current cycle.
 
-CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`, `--verbose`, `--debug`
+CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`, `--verbose`, `--debug`, `--version`
+
+`snapshot_time = time()` is captured before `_collect_snapshot()` to timestamp the sample start, not the end of ss execution.
 
 ## Running Tests
 
