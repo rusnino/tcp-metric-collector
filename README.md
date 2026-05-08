@@ -71,6 +71,9 @@ uv run tcp_metrics_collector.py -a 192.168.1.100 --verbose
 
 # Debug — shows every line parsed/skipped (useful when no output appears)
 uv run tcp_metrics_collector.py -a 192.168.1.100 --debug
+
+# Long-running collection — use ndjson/csv to avoid memory growth
+uv run tcp_metrics_collector.py -a 192.168.1.100 --format ndjson | tee metrics.ndjson
 ```
 
 ## Output Formats
@@ -137,3 +140,4 @@ Common causes: no active TCP connections to target IP; target unreachable; ss ou
 
 - **IPv4 only** — `is_valid_ipv4()` rejects IPv6 at input; `RE_TCP_SESSION_LOOKUP` only matches dotted-decimal addresses
 - `CLOSING` state sessions skipped
+- **Memory growth in default text mode** — without `--stream`, every parsed record is buffered in memory until exit so session blocks can be printed. Memory grows as `sessions × samples`. For runs longer than a few minutes or with many concurrent TCP sessions, use `--format ndjson`, `--format csv`, or `--stream` instead — these emit and discard each record immediately (O(1) memory per cycle).
