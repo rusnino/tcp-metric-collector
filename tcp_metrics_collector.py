@@ -180,22 +180,37 @@ def _collect_snapshot(
 
     _dbg(f"inet_diag returned {len(sockets)} socket(s)")
 
+    # Canonical form of the target IP for comparison — normalises IPv6 forms
+    # (e.g. "2001:0db8:0:0:0:0:0:1" == "2001:db8::1" after compression).
+    try:
+        ip_canonical = ipaddress.ip_address(ip).compressed
+    except ValueError:
+        ip_canonical = ip
+
     results: list[SnapshotRecord] = []
     for sock in sockets:
         # Only ESTABLISHED (state=1); SS_CONN also includes SYN_SENT/SYN_RECV
         if sock.get("idiag_state") != _TCP_ESTABLISHED:
             continue
 
-        dst_ip: str = sock.get("idiag_dst", "")
-        if dst_ip != ip:
+        raw_dst: str = sock.get("idiag_dst", "")
+        try:
+            dst_canonical = ipaddress.ip_address(raw_dst).compressed
+        except ValueError:
+            dst_canonical = raw_dst
+        if dst_canonical != ip_canonical:
             continue
 
-        src_ip: str = sock.get("idiag_src", "")
+        raw_src: str = sock.get("idiag_src", "")
+        try:
+            src_canonical = ipaddress.ip_address(raw_src).compressed
+        except ValueError:
+            src_canonical = raw_src
         sport: int = sock.get("idiag_sport", 0)
         dport: int = sock.get("idiag_dport", 0)
 
-        src = f"{src_ip}:{sport}"
-        dst = f"{dst_ip}:{dport}"
+        src = f"{src_canonical}:{sport}"
+        dst = f"{dst_canonical}:{dport}"
 
         # Use get_attr() — attrs is a list of (name, value) tuples, not a dict
         tcp_info = dict(sock.get_attr("INET_DIAG_INFO") or {})

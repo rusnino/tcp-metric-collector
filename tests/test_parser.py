@@ -298,6 +298,23 @@ class TestCollectSnapshot:
         assert len(records) == 1
         assert records[0][1] == "::1:80"
 
+    def test_ipv6_non_canonical_input_matches(self):
+        # Kernel may return compressed "2001:db8::1"; user may pass expanded form.
+        # Both must match after canonical normalisation.
+        socks = [_make_sock("::1", 45231, "2001:db8::1", 80)]
+        # Pass expanded form — should still match compressed kernel output
+        records = self._run("2001:0db8:0:0:0:0:0:1", socks)
+        assert records is not None
+        assert len(records) == 1
+
+    def test_ipv6_src_address_normalised_in_output(self):
+        # Source address from kernel is already compressed by pyroute2,
+        # but verify it passes through correctly.
+        socks = [_make_sock("2001:db8::2", 45231, "2001:db8::1", 80)]
+        records = self._run("2001:db8::1", socks)
+        assert records is not None
+        assert records[0][0] == "2001:db8::2:45231"  # src:port
+
 
 # ---------------------------------------------------------------------------
 # _parse_snapshot — structured records in, buffered or streamed out
