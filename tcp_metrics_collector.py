@@ -159,10 +159,17 @@ def _extract_metrics(tcp_info: dict) -> MetricDict:
 
 
 def _collect_snapshot(
-    ip: str, shutdown_ref: list[bool], timeout: float = POLL_TIMEOUT
+    ip: str,
+    shutdown_ref: list[bool],
+    timeout: float = POLL_TIMEOUT,
+    diag_socket: DiagSocket | None = None,
 ) -> list[SnapshotRecord] | None:
     """Query kernel via inet_diag netlink. Returns list of (src, dst, metrics)
-    for all ESTABLISHED TCP sessions to dst ip, or None if interrupted."""
+    for all ESTABLISHED TCP sessions to dst ip, or None if interrupted.
+
+    diag_socket: reuse an already-bound DiagSocket for efficiency. If None,
+    a new socket is created and closed per call (fallback after timeout).
+    """
     if shutdown_ref[0]:
         return None
 
@@ -173,13 +180,20 @@ def _collect_snapshot(
 
     def _query() -> None:
         try:
-            with DiagSocket() as ds:
-                ds.bind()
-                result_box.append(ds.get_sock_stats(
+            if diag_socket is not None:
+                result_box.append(diag_socket.get_sock_stats(
                     family=family,
                     states=SS_CONN,
                     extensions=_INET_DIAG_INFO_EXT,
                 ))
+            else:
+                with DiagSocket() as ds:
+                    ds.bind()
+                    result_box.append(ds.get_sock_stats(
+                        family=family,
+                        states=SS_CONN,
+                        extensions=_INET_DIAG_INFO_EXT,
+                    ))
         except Exception as exc:  # noqa: BLE001
             error_box.append(exc)
 
@@ -379,6 +393,16 @@ def run(ip: str, duration: float | None, max_samples: int | None,
         csv_writer.writeheader()
         out.flush()
 
+    # Open a persistent DiagSocket for the duration of collection. This avoids
+    # creating and closing a netlink socket on every 100ms poll cycle.
+    # The socket is recreated after a timeout (the hung thread may have the
+    # original socket in an unknown state).
+    try:
+        _ds: DiagSocket | None = DiagSocket()
+        _ds.bind()
+    except OSError as exc:
+        raise click.ClickException(f"Cannot open inet_diag socket: {exc}")
+
     try:
         click.echo(
             f"INFO: Collecting TCP metrics for {ip} every {DEFAULT_SLEEP}s."
@@ -400,9 +424,12 @@ def run(ip: str, duration: float | None, max_samples: int | None,
             next_tick += DEFAULT_SLEEP
 
             snapshot_time = time()  # capture before query — timestamp reflects sample start
-            records = _collect_snapshot(ip, shutdown_ref, poll_timeout)
+            records = _collect_snapshot(ip, shutdown_ref, poll_timeout, _ds)
             if records is None:
                 break
+            # On timeout _ds may be in unknown state — create a fresh socket.
+            # _collect_snapshot raises ClickException on timeout without shutdown,
+            # so reaching here means the query succeeded.
 
             _parse_snapshot(records, snapshot_time, sessions, fmt, stream, out, csv_writer)
             sample_count += 1
@@ -434,6 +461,11 @@ def run(ip: str, duration: float | None, max_samples: int | None,
             _print_sessions(sessions, out)
 
     finally:
+        if _ds is not None:
+            try:
+                _ds.close()
+            except Exception:  # noqa: BLE001
+                pass
         if output and not out.closed:
             out.close()
 

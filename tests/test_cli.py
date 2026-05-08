@@ -5,8 +5,9 @@ import io
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -48,7 +49,7 @@ def _mock_one_shot(records: list):
     """Return a _collect_snapshot mock that yields records once then signals shutdown."""
     fired = False
 
-    def _collect(ip, shutdown_ref, timeout=None):
+    def _collect(ip, shutdown_ref, timeout=None, diag_socket=None):
         nonlocal fired
         if fired:
             shutdown_ref[0] = True
@@ -62,6 +63,18 @@ def _mock_one_shot(records: list):
 @pytest.fixture
 def runner():
     return CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def mock_diag_socket():
+    """Prevent CLI tests from opening a real DiagSocket in run()."""
+    mock_ds = MagicMock()
+    mock_ds.__enter__ = MagicMock(return_value=mock_ds)
+    mock_ds.__exit__ = MagicMock(return_value=False)
+    mock_ds.bind = MagicMock()
+    mock_ds.close = MagicMock()
+    with patch("tcp_metrics_collector.DiagSocket", return_value=mock_ds):
+        yield mock_ds
 
 
 def _json_lines(output: str) -> list[str]:
@@ -185,7 +198,7 @@ class TestTextFormat:
     def test_max_samples_1_stops_after_one(self, runner):
         call_count = []
 
-        def _collect(ip, shutdown_ref, timeout=None):
+        def _collect(ip, shutdown_ref, timeout=None, diag_socket=None):
             call_count.append(1)
             return _SINGLE_SESSION_RECORDS
 
@@ -197,7 +210,7 @@ class TestTextFormat:
     def test_duration_stops_collection(self, runner):
         call_count = []
 
-        def _collect(ip, shutdown_ref, timeout=None):
+        def _collect(ip, shutdown_ref, timeout=None, diag_socket=None):
             call_count.append(1)
             return _SINGLE_SESSION_RECORDS
 
@@ -209,7 +222,7 @@ class TestTextFormat:
     def test_duration_waits_for_first_session(self, runner):
         calls = []
 
-        def _collect(ip, shutdown_ref, timeout=None):
+        def _collect(ip, shutdown_ref, timeout=None, diag_socket=None):
             calls.append(1)
             if len(calls) < 3:
                 return []
@@ -340,14 +353,12 @@ class TestOutputFile:
 # ---------------------------------------------------------------------------
 
 class TestDiagFailure:
-    def test_oserror_exits_1(self, runner):
-        from unittest.mock import MagicMock
-        mock_ds = MagicMock()
-        mock_ds.__enter__ = MagicMock(return_value=mock_ds)
-        mock_ds.__exit__ = MagicMock(return_value=False)
-        mock_ds.get_sock_stats.side_effect = OSError("permission denied")
+    def test_oserror_exits_1(self, runner, mock_diag_socket):
+        # Simulate get_sock_stats failing after socket is open (e.g. mid-run error)
+        mock_diag_socket.get_sock_stats.side_effect = OSError("permission denied")
 
-        with patch("tcp_metrics_collector.DiagSocket", return_value=mock_ds):
+        with patch("tcp_metrics_collector._collect_snapshot",
+                   side_effect=click.ClickException("inet_diag query failed: permission denied")):
             result = runner.invoke(run, ["-a", "192.168.1.100"])
         assert result.exit_code == 1
         assert "permission denied" in result.output
