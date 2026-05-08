@@ -229,6 +229,42 @@ class TestCollectSnapshot:
             result = _collect_snapshot("192.168.1.100", shutdown)
         assert result is None
 
+    def test_timeout_raises_click_exception(self):
+        import time
+        import click as _click
+
+        mock_ds = MagicMock()
+        mock_ds.__enter__ = MagicMock(return_value=mock_ds)
+        mock_ds.__exit__ = MagicMock(return_value=False)
+
+        def _slow_query(*_, **__):
+            time.sleep(10)  # hangs — thread pool will timeout before this
+
+        mock_ds.get_sock_stats.side_effect = _slow_query
+
+        with patch("tcp_metrics_collector.DiagSocket", return_value=mock_ds):
+            with pytest.raises(_click.ClickException, match="0.05"):
+                _collect_snapshot("192.168.1.100", [False], timeout=0.05)
+
+    def test_timeout_with_shutdown_returns_none(self):
+        import time
+
+        mock_ds = MagicMock()
+        mock_ds.__enter__ = MagicMock(return_value=mock_ds)
+        mock_ds.__exit__ = MagicMock(return_value=False)
+
+        shutdown = [False]
+
+        def _slow_query(*_, **__):
+            shutdown[0] = True
+            time.sleep(10)
+
+        mock_ds.get_sock_stats.side_effect = _slow_query
+
+        with patch("tcp_metrics_collector.DiagSocket", return_value=mock_ds):
+            result = _collect_snapshot("192.168.1.100", shutdown, timeout=0.05)
+        assert result is None
+
     def test_oserror_raises_click_exception(self):
         import click
 

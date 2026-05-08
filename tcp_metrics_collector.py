@@ -7,6 +7,7 @@
 #
 
 import csv
+import concurrent.futures
 import ipaddress
 import json
 import re
@@ -141,18 +142,37 @@ def _collect_snapshot(
 
     family = AF_INET6 if ":" in ip else AF_INET
 
-    try:
+    def _query() -> tuple:
         with DiagSocket() as ds:
             ds.bind()
-            sockets = ds.get_sock_stats(
+            return ds.get_sock_stats(
                 family=family,
                 states=SS_CONN,
                 extensions=_INET_DIAG_INFO_EXT,
             )
+
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    fut = ex.submit(_query)
+    try:
+        sockets = fut.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        # Do not wait for the hung thread — kernel netlink calls cannot be
+        # interrupted, so we abandon the thread and continue.
+        ex.shutdown(wait=False)
+        if shutdown_ref[0]:
+            return None
+        raise click.ClickException(
+            f"inet_diag query did not respond within {timeout}s; "
+            "possible kernel/netlink hang"
+        )
     except OSError as exc:
+        ex.shutdown(wait=False)
         raise click.ClickException(f"inet_diag query failed: {exc}")
     except Exception as exc:
+        ex.shutdown(wait=False)
         raise click.ClickException(f"inet_diag error: {exc}")
+    else:
+        ex.shutdown(wait=False)
 
     if shutdown_ref[0]:
         _dbg("snapshot skipped — shutdown signalled during netlink query")
