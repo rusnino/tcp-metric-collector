@@ -30,6 +30,8 @@ python3 tcp_metrics_collector.py -a <destination_ip>
 
 Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 
+> **`--version` in bare-script mode:** `uv run` and `uvx` always install the package, so `--version` reports the correct version from package metadata. When run as `python3 tcp_metrics_collector.py`, the script falls back to reading `pyproject.toml` from the same directory. If `pyproject.toml` is absent, `--version` shows `unknown`.
+
 ## Options
 
 | Option | Description |

@@ -23,7 +23,17 @@ import click
 try:
     _VERSION = _pkg_version("tcp-metric-collector")
 except PackageNotFoundError:
-    _VERSION = "unknown"  # running as bare script without package install
+    # Bare-script mode (python3 tcp_metrics_collector.py): package not installed.
+    # Fall back to reading version from pyproject.toml in the same directory.
+    # Uses regex to avoid requiring tomllib/tomli at runtime.
+    try:
+        import pathlib as _pathlib
+        _pyproject = _pathlib.Path(__file__).with_name("pyproject.toml")
+        _m = re.search(r'^version\s*=\s*"([^"]+)"', _pyproject.read_text(), re.MULTILINE)
+        _VERSION = _m.group(1) if _m else "unknown"
+        del _pathlib, _pyproject, _m
+    except Exception:
+        _VERSION = "unknown"
 
 DEFAULT_SLEEP: float = 0.1
 SESSION_SEP = "|"
