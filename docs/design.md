@@ -179,7 +179,11 @@ Two forms are accepted:
 - **`key:value`** — any of the 7 allowlisted tokens (`cwnd`, `rtt`, `mss`, `ssthresh`, `send`, `unacked`, `retrans`) in colon-separated form.
 - **`send VALUE`** — send rate in space-separated form (e.g. `send 84.7Mbps`), which `ss` emits without a colon. `_parse_metrics_line()` normalises this to `send:VALUE` before regex matching; `_RE_HAS_METRIC` must detect it in pre-normalised form to avoid filtering it out in `_collect_snapshot()`.
 
-Both `_parse_metrics_line()` and `_collect_snapshot()` use `_RE_HAS_METRIC` so the detection contract is enforced at a single compiled object. `wscale` is no longer special-cased anywhere.
+**Usage split:**
+- `_collect_snapshot()` uses `_RE_HAS_METRIC` as a pre-filter to decide which lines to keep (adjacency check, line 169). It runs against the raw, un-normalised line.
+- `_parse_metrics_line()` does **not** use `_RE_HAS_METRIC`. It normalises `send VALUE` → `send:VALUE` first, then matches with `RE_TCP_METRIC_PARAM_LOOKUP` (the base pattern). This is correct: the parser operates on a single line in isolation and can normalise before matching.
+
+The two components are kept semantically consistent: `_RE_HAS_METRIC` detects both the colon-form and the raw space-form so the pre-filter accepts every line the parser can handle. If a new metric form is added to `_parse_metrics_line`, `_RE_HAS_METRIC` must be updated accordingly. `wscale` is no longer special-cased anywhere.
 
 ### 14. No `sys.exit()` in `run()` — idiomatic Click
 
