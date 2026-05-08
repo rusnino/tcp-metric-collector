@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 from unittest.mock import patch
 
+import click
 import pytest
 
 from tcp_metrics_collector import (
@@ -262,8 +263,6 @@ def _make_ss_result(fixture: str, returncode: int = 0) -> subprocess.CompletedPr
 
 
 class TestCollectSnapshot:
-    _SHUTDOWN_OFF: list[bool] = [False]
-
     def test_session_and_metric_line_kept(self):
         with patch("subprocess.run", return_value=_make_ss_result("ss_estab_single.txt")):
             kept = _collect_snapshot("192.168.1.100", [False])
@@ -316,20 +315,17 @@ class TestCollectSnapshot:
         assert result is None
 
     def test_nonzero_returncode_raises(self):
-        import click
         bad = subprocess.CompletedProcess(args=["ss"], returncode=1, stdout="", stderr="oops")
         with patch("subprocess.run", return_value=bad):
             with pytest.raises(click.ClickException, match="oops"):
                 _collect_snapshot("192.168.1.100", [False])
 
     def test_file_not_found_raises(self):
-        import click
         with patch("subprocess.run", side_effect=FileNotFoundError):
             with pytest.raises(click.ClickException, match="iproute2"):
                 _collect_snapshot("192.168.1.100", [False])
 
     def test_timeout_raises(self):
-        import click
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ss", timeout=5.0)):
             with pytest.raises(click.ClickException, match="5.0"):
                 _collect_snapshot("192.168.1.100", [False])

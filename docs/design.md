@@ -42,7 +42,7 @@ Single-file Python 3 script. One external dependency: `click` (CLI). Packaged wi
 _collect_snapshot(ip, shutdown_ref)
   → subprocess.run(["ss", "-H", "-n", "-i", "dst", ip])
   → filter: keep only (session_line, adjacent metrics_line) pairs
-    (metric line detected by _RE_HAS_METRIC — any allowlisted key:value token)
+    (metric line detected by _RE_HAS_METRIC — allowlisted key:value OR "send VALUE")
   → return list[str]  or  None on shutdown
 
 _parse_snapshot(lines, snapshot_time, sessions, fmt, stream, out, csv_writer)
@@ -185,7 +185,13 @@ Two forms are accepted:
 
 The two components are kept semantically consistent: `_RE_HAS_METRIC` detects both the colon-form and the raw space-form so the pre-filter accepts every line the parser can handle. If a new metric form is added to `_parse_metrics_line`, `_RE_HAS_METRIC` must be updated accordingly. `wscale` is no longer special-cased anywhere.
 
-### 14. No `sys.exit()` in `run()` — idiomatic Click
+### 14. `SS_TIMEOUT` — hard limit on ss execution time
+
+`subprocess.run(["ss", ...])` previously had no timeout. If ss hung (kernel/netlink issue, overloaded host), the collector blocked indefinitely. `--duration` and `--max-samples` checks run after `_collect_snapshot()` returns, so they cannot interrupt a stalled call.
+
+`SS_TIMEOUT = 5.0` (seconds) passed to `subprocess.run(timeout=...)`. On timeout, `subprocess.TimeoutExpired` is caught and raised as `click.ClickException`. 5 seconds is generous (normal ss completes in <100ms) while catching true hangs.
+
+### 15. No `sys.exit()` in `run()` — idiomatic Click
 
 `sys.exit(0)` was called at the end of `run()` and `sys.exit(1)` on ss failure. Click manages exit codes itself; calling `sys.exit()` inside a Click command bypasses that and makes `CliRunner`-based testing awkward (the runner catches `SystemExit`, so tests worked, but it's non-idiomatic).
 

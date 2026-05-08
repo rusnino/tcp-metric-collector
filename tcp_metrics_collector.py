@@ -54,7 +54,9 @@ RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+:\S+)\s+(\d
 RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans):(\S+)"
 # Compiled fast-check: is a line a ss metrics line at all?
 # Matches standard key:value tokens OR "send VALUE" (space-separated in ss output).
-# Must stay aligned with _parse_metrics_line normalization.
+# Used only by _collect_snapshot() as a pre-filter (not by _parse_metrics_line).
+# If a new metric form is added to _parse_metrics_line, add a matching
+# alternation here so the line reaches the parser.
 _RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP + r"|\bsend \S")
 
 _verbose = False
