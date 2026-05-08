@@ -1,7 +1,6 @@
 """Unit tests for tcp_metrics_collector netlink-based metric extraction."""
 
 import io
-import sys
 from collections import defaultdict
 from unittest.mock import MagicMock, patch
 
@@ -12,6 +11,7 @@ from tcp_metrics_collector import (
     _TCP_ESTABLISHED,
     _collect_snapshot,
     _extract_metrics,
+    _format_addr,
     _format_rate,
     _parse_snapshot,
     is_valid_ip,
@@ -58,6 +58,30 @@ class TestFormatRate:
 
     def test_bps(self):
         assert _format_rate(100) == "100bps"
+
+
+# ---------------------------------------------------------------------------
+# _format_addr — RFC 2732 bracket notation for IPv6
+# ---------------------------------------------------------------------------
+
+class TestFormatAddr:
+    def test_ipv4_no_brackets(self):
+        assert _format_addr("192.168.1.1", 80) == "192.168.1.1:80"
+
+    def test_ipv4_loopback(self):
+        assert _format_addr("127.0.0.1", 1234) == "127.0.0.1:1234"
+
+    def test_ipv6_loopback_bracketed(self):
+        assert _format_addr("::1", 80) == "[::1]:80"
+
+    def test_ipv6_full_bracketed(self):
+        assert _format_addr("2001:db8::1", 443) == "[2001:db8::1]:443"
+
+    def test_ipv6_port_unambiguous(self):
+        # Ensure split on last ":" gives correct port in all cases
+        addr = _format_addr("2001:db8::1", 8080)
+        assert addr.endswith(":8080")
+        assert addr.startswith("[")
 
 
 # ---------------------------------------------------------------------------

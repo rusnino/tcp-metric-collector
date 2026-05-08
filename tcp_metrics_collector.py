@@ -94,7 +94,7 @@ def is_valid_ip(ip: str) -> bool:
 
 
 def _format_rate(bps: float) -> str:
-    """Format bytes-per-second as human-readable rate string matching ss output style."""
+    """Format bits-per-second as human-readable rate string matching ss output style."""
     if bps >= 1e9:
         return f"{bps / 1e9:.3g}Gbps"
     if bps >= 1e6:
@@ -108,7 +108,7 @@ def _extract_metrics(tcp_info: dict) -> MetricDict:
     """Map tcp_info fields to the output metric schema.
 
     All integer/float fields come directly from the kernel tcp_info struct.
-    send is derived: cwnd * mss * 1e6 / rtt_us (approximates ss send rate display).
+    send is derived: cwnd * mss * 8 * 1e6 / rtt_us (bits in flight / rtt in seconds).
     """
     rtt_us: int = tcp_info.get("tcpi_rtt", 0) or 0
     rttvar_us: int = tcp_info.get("tcpi_rttvar", 0) or 0
