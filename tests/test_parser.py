@@ -309,12 +309,12 @@ class TestCollectSnapshot:
         assert len(kept) == 4
 
     def test_no_metric_line_session_not_kept(self):
-        # ss_no_metrics.txt: metrics line has no allowlisted tokens → not kept
+        # ss_no_metrics.txt: adjacent line has no allowlisted tokens.
+        # Pair-based filter keeps neither line — no complete pair exists.
         with patch("subprocess.run", return_value=_make_ss_result("ss_no_metrics.txt")):
             kept = _collect_snapshot("192.168.1.100", [False])
         assert kept is not None
-        # session line itself contains IP and is kept; metrics line is not
-        assert len(kept) == 1
+        assert len(kept) == 0
 
     def test_shutdown_during_ss_returns_none(self):
         shutdown = [False]

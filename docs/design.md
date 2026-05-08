@@ -41,8 +41,10 @@ Single-file Python 3 script. One external dependency: `click` (CLI). Packaged wi
 ```
 _collect_snapshot(ip, shutdown_ref)
   → subprocess.run(["ss", "-H", "-n", "-i", "dst", ip])
-  → filter: keep only (session_line, adjacent metrics_line) pairs
-    (metric line detected by _RE_HAS_METRIC — allowlisted key:value OR "send VALUE")
+  → filter: for each session line (contains dst IP), check next line;
+    if next line matches _RE_HAS_METRIC, keep BOTH lines as a pair.
+    Session lines without an adjacent metrics line are discarded.
+    (_RE_HAS_METRIC: allowlisted key:value OR "send VALUE")
   → return list[str]  or  None on shutdown
 
 _parse_snapshot(lines, snapshot_time, sessions, fmt, stream, out, csv_writer)

@@ -189,11 +189,12 @@ def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
     kept: list[str] = []
     for i, line in enumerate(raw):
         if ip in line:
-            kept.append(line)
-        elif _RE_HAS_METRIC.search(line) and i > 0 and ip in raw[i - 1]:
-            kept.append(line)
+            next_line = raw[i + 1] if i + 1 < len(raw) else ""
+            if _RE_HAS_METRIC.search(next_line):
+                kept.append(line)
+                kept.append(next_line)
 
-    _dbg(f"kept {len(kept)} lines after filter")
+    _dbg(f"kept {len(kept)} lines after filter ({len(kept) // 2} pair(s))")
     return kept
 
 
