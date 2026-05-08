@@ -129,7 +129,7 @@ class TestExtractMetrics:
 # ---------------------------------------------------------------------------
 
 def _make_sock(src_ip, src_port, dst_ip, dst_port, state=_TCP_ESTABLISHED, **tcp_info_overrides):
-    """Build a mock inet_diag socket dict as returned by pyroute2."""
+    """Build a mock inet_diag_msg object matching pyroute2's get_sock_stats() return."""
     tcp_info = {
         "tcpi_snd_cwnd": 10,
         "tcpi_snd_mss": 1460,
@@ -141,14 +141,18 @@ def _make_sock(src_ip, src_port, dst_ip, dst_port, state=_TCP_ESTABLISHED, **tcp
         "tcpi_total_retrans": 0,
     }
     tcp_info.update(tcp_info_overrides)
-    return {
+    # pyroute2 returns nlmsg objects that behave like dicts for scalar fields
+    # but use get_attr() for NLA attributes (attrs is a list of tuples)
+    sock = MagicMock()
+    sock.get = lambda key, default=None: {
         "idiag_state": state,
         "idiag_src": src_ip,
         "idiag_dst": dst_ip,
         "idiag_sport": src_port,
         "idiag_dport": dst_port,
-        "attrs": {"INET_DIAG_INFO": tcp_info},
-    }
+    }.get(key, default)
+    sock.get_attr = lambda key: tcp_info if key == "INET_DIAG_INFO" else None
+    return sock
 
 
 class TestCollectSnapshot:

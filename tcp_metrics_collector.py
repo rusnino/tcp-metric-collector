@@ -175,7 +175,8 @@ def _collect_snapshot(
         src = f"{src_ip}:{sport}"
         dst = f"{dst_ip}:{dport}"
 
-        tcp_info = dict(sock.get("attrs", {}).get("INET_DIAG_INFO") or {})
+        # Use get_attr() — attrs is a list of (name, value) tuples, not a dict
+        tcp_info = dict(sock.get_attr("INET_DIAG_INFO") or {})
         metrics = _extract_metrics(tcp_info)
 
         _dbg(f"session {src} -> {dst}: {metrics}")
