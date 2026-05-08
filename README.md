@@ -107,17 +107,17 @@ Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 
 ## Collected Metrics
 
-| Field | Type | ndjson absent | csv absent |
-|-------|------|--------------|------------|
-| `cwnd` | `int` | `null` | empty cell |
-| `mss` | `int` | `null` | empty cell |
-| `ssthresh` | `int` | `null` | empty cell |
-| `unacked` | `int` | `null` | empty cell |
-| `rtt_ms` | `float` | `null` | empty cell |
-| `rttvar_ms` | `float` | `null` | empty cell |
-| `retrans_cur` | `int` | `null` | empty cell |
-| `retrans_total` | `int` | `null` | empty cell |
-| `send` | `string` | `null` | empty cell |
+| Field | Type | ndjson absent | csv absent | Description |
+|-------|------|--------------|------------|-------------|
+| `cwnd` | `int` | `null` | empty cell | Congestion window (segments) |
+| `mss` | `int` | `null` | empty cell | Maximum segment size (bytes) |
+| `ssthresh` | `int` | `null` | empty cell | Slow-start threshold |
+| `unacked` | `int` | `null` | empty cell | Unacknowledged segments |
+| `rtt_ms` | `float` | `null` | empty cell | Round-trip time (ms) |
+| `rttvar_ms` | `float` | `null` | empty cell | RTT variance (ms) — second component of `rtt:X/Y` from ss |
+| `retrans_cur` | `int` | `null` | empty cell | Current retransmissions |
+| `retrans_total` | `int` | `null` | empty cell | Total retransmissions |
+| `send` | `string` | `null` | empty cell | Estimated send rate (e.g. `"84.7Mbps"`) |
 
 Absent = field not present in `ss` output for that sample. Distinct from `0` (present but zero).
 
