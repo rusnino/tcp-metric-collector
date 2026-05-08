@@ -1,14 +1,17 @@
 """Unit tests for tcp_metrics_collector parsing functions."""
 
 import io
+import subprocess
 from collections import defaultdict
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from tcp_metrics_collector import (
     SESSION_SEP,
     _RE_HAS_METRIC,
+    _collect_snapshot,
     _parse_metrics_line,
     _parse_session_line,
     _parse_snapshot,
@@ -245,3 +248,88 @@ class TestParseSnapshot:
         # ss_no_metrics.txt has a metrics-style line but zero allowlisted tokens
         sessions = self._run("ss_no_metrics.txt")
         assert len(sessions) == 0
+
+
+# ---------------------------------------------------------------------------
+# _collect_snapshot — adjacency filter tested with mocked subprocess
+# ---------------------------------------------------------------------------
+
+def _make_ss_result(fixture: str, returncode: int = 0) -> subprocess.CompletedProcess:
+    text = (FIXTURES / fixture).read_text()
+    return subprocess.CompletedProcess(
+        args=["ss"], returncode=returncode, stdout=text, stderr=""
+    )
+
+
+class TestCollectSnapshot:
+    _SHUTDOWN_OFF: list[bool] = [False]
+
+    def test_session_and_metric_line_kept(self):
+        with patch("subprocess.run", return_value=_make_ss_result("ss_estab_single.txt")):
+            kept = _collect_snapshot("192.168.1.100", [False])
+        assert kept is not None
+        assert len(kept) == 2
+        assert "192.168.1.100" in kept[0]   # session line
+        assert "cwnd" in kept[1]             # metrics line
+
+    def test_header_line_not_kept(self):
+        # ss_estab_single.txt has a Netid/State header; -H flag removes it in production
+        # but our fixture includes it to test that the filter correctly ignores it
+        with patch("subprocess.run", return_value=_make_ss_result("ss_estab_single.txt")):
+            kept = _collect_snapshot("192.168.1.100", [False])
+        assert kept is not None
+        assert not any("Netid" in line for line in kept)
+
+    def test_send_only_metric_line_kept(self):
+        # Fixture has metrics line with only "send VALUE" (space-separated).
+        # _RE_HAS_METRIC must match it so it survives the filter.
+        with patch("subprocess.run", return_value=_make_ss_result("ss_send_only.txt")):
+            kept = _collect_snapshot("192.168.1.100", [False])
+        assert kept is not None
+        assert len(kept) == 2
+        assert "send 84.7Mbps" in kept[1]
+
+    def test_multiple_sessions_all_pairs_kept(self):
+        with patch("subprocess.run", return_value=_make_ss_result("ss_multiple_sessions.txt")):
+            kept = _collect_snapshot("192.168.1.100", [False])
+        assert kept is not None
+        # 2 sessions × 2 lines each
+        assert len(kept) == 4
+
+    def test_no_metric_line_session_not_kept(self):
+        # ss_no_metrics.txt: metrics line has no allowlisted tokens → not kept
+        with patch("subprocess.run", return_value=_make_ss_result("ss_no_metrics.txt")):
+            kept = _collect_snapshot("192.168.1.100", [False])
+        assert kept is not None
+        # session line itself contains IP and is kept; metrics line is not
+        assert len(kept) == 1
+
+    def test_shutdown_during_ss_returns_none(self):
+        shutdown = [False]
+
+        def _side_effect(*args, **kwargs):
+            shutdown[0] = True  # simulate SIGINT arriving while ss runs
+            return subprocess.CompletedProcess(args=["ss"], returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=_side_effect):
+            result = _collect_snapshot("192.168.1.100", shutdown)
+        assert result is None
+
+    def test_nonzero_returncode_raises(self):
+        import click
+        bad = subprocess.CompletedProcess(args=["ss"], returncode=1, stdout="", stderr="oops")
+        with patch("subprocess.run", return_value=bad):
+            with pytest.raises(click.ClickException, match="oops"):
+                _collect_snapshot("192.168.1.100", [False])
+
+    def test_file_not_found_raises(self):
+        import click
+        with patch("subprocess.run", side_effect=FileNotFoundError):
+            with pytest.raises(click.ClickException, match="iproute2"):
+                _collect_snapshot("192.168.1.100", [False])
+
+    def test_timeout_raises(self):
+        import click
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ss", timeout=5.0)):
+            with pytest.raises(click.ClickException, match="5.0"):
+                _collect_snapshot("192.168.1.100", [False])
