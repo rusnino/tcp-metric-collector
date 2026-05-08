@@ -77,8 +77,8 @@ uv run tcp_metrics_collector.py -a 192.168.1.100 --debug
 # Long-running collection — use ndjson/csv to avoid memory growth
 uv run tcp_metrics_collector.py -a 192.168.1.100 --format ndjson | tee metrics.ndjson
 
-# Increase ss timeout on slow/loaded hosts (default 5.0s)
-uv run tcp_metrics_collector.py -a 192.168.1.100 --ss-timeout 15
+# Increase netlink poll timeout on slow/loaded hosts (default 5.0s)
+uv run tcp_metrics_collector.py -a 192.168.1.100 --poll-timeout 15
 ```
 
 ## Output Formats
@@ -124,27 +124,29 @@ Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 | `ssthresh` | `int` | `null` | empty cell | Slow-start threshold |
 | `unacked` | `int` | `null` | empty cell | Unacknowledged segments |
 | `rtt_ms` | `float` | `null` | empty cell | Round-trip time (ms) |
-| `rttvar_ms` | `float` | `null` | empty cell | RTT variance (ms) — second component of `rtt:X/Y` from ss |
+| `rttvar_ms` | `float` | `null` | empty cell | RTT variance (ms) — from `tcpi_rttvar` (kernel µs ÷ 1000) |
 | `retrans_cur` | `int` | `null` | empty cell | Current retransmissions |
 | `retrans_total` | `int` | `null` | empty cell | Total retransmissions |
 | `send` | `string` | `null` | empty cell | Estimated send rate (e.g. `"84.7Mbps"`) |
 
-Absent = field not present in `ss` output for that sample. Distinct from `0` (present but zero).
+Absent = field not present / zero in `tcp_info` for that sample. Distinct from `0` (present but zero).
 
 ## Diagnostics
 
-**No output after Ctrl+C?** Use `--debug` to see which lines ss returns and why sessions are skipped:
+**No output after Ctrl+C?** Use `--debug` to see what the netlink query returns and which sockets are filtered:
 
 ```bash
 uv run tcp_metrics_collector.py -a 192.168.1.100 --debug
 ```
 
-Common causes: no active TCP connections to target IP; target unreachable; ss output format differs from expected (check `ss -H -n -i dst 192.168.1.100` manually).
+Common causes: no active TCP ESTABLISHED connections to target IP; insufficient privileges (needs `CAP_NET_ADMIN` or root); target IP not reachable. Verify directly: `ss -H -n -i dst 192.168.1.100`.
 
-**Sampling interval accuracy:** Uses monotonic tick scheduler — actual interval is 100ms minus ss execution time. If ss takes longer than 100ms, next sample fires immediately. Use `--verbose` to observe sample cadence.
+**Sampling interval accuracy:** Uses monotonic tick scheduler — actual interval is 100ms minus netlink query time. Kernel inet_diag calls are local and typically complete in <1ms, so jitter is minimal. Use `--verbose` to observe sample cadence.
+
+**Netlink query hung?** If the kernel blocks the `inet_diag` query (very rare), the tool will raise an error after `--poll-timeout` seconds (default 5.0). The blocked thread is abandoned as a daemon and terminates when the process exits.
 
 ## Known Limitations
 
 - **`CAP_NET_ADMIN` required** — netlink inet_diag queries require elevated privileges; run with `sudo` or grant the capability
-- `CLOSING` state sessions skipped
+- Only `ESTABLISHED` (state=1) TCP sessions collected; SYN_SENT/SYN_RECV/CLOSING excluded
 - **Memory growth in default text mode** — without `--stream`, every parsed record is buffered in memory until exit so session blocks can be printed. Memory grows as `sessions × samples`. For runs longer than a few minutes or with many concurrent TCP sessions, use `--format ndjson`, `--format csv`, or `--stream` instead — these emit and discard each record immediately (O(1) memory per cycle).
