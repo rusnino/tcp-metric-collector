@@ -125,8 +125,8 @@ def _extract_metrics(tcp_info: dict) -> MetricDict:
     All integer/float fields come directly from the kernel tcp_info struct.
     send is derived: cwnd * mss * 8 * 1e6 / rtt_us (bits in flight / rtt in seconds).
     """
-    rtt_us: int = tcp_info.get("tcpi_rtt", 0) or 0
-    rttvar_us: int = tcp_info.get("tcpi_rttvar", 0) or 0
+    rtt_us: int = tcp_info.get("tcpi_rtt") or 0
+    rttvar_us: int = tcp_info.get("tcpi_rttvar") or 0
     cwnd: int | None = tcp_info.get("tcpi_snd_cwnd")
     mss: int | None = tcp_info.get("tcpi_snd_mss")
     ssthresh_raw: int | None = tcp_info.get("tcpi_snd_ssthresh")
@@ -335,7 +335,7 @@ def _print_sessions(
 
 
 @click.command()
-@click.version_option(version=_VERSION, prog_name="tcp-metric-collector")  # version read from package metadata
+@click.version_option(version=_VERSION, prog_name="tcp-metric-collector")
 @click.option("-a", "ip", required=True, help="Destination IP address to monitor (IPv4 or IPv6)")
 @click.option("--duration", type=click.FloatRange(min=0.001), default=None,
               help="Stop collecting N seconds after the first TCP session is seen (must be > 0)."
