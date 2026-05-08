@@ -1,10 +1,11 @@
 [project]
 name = "tcp-metric-collector"
 version = "0.3.0"
-description = "Collects TCP metrics per destination IP on Linux using ss socket statistics"
+description = "Collects TCP metrics per destination IP via Linux inet_diag netlink"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.1.8",
+    "pyroute2>=0.7",
 ]
 
 [project.scripts]

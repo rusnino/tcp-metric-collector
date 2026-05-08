@@ -1,12 +1,13 @@
 # TCP Metric Collector
 
-Collects TCP metrics per destination IPv4 address on Linux. Samples `ss` socket statistics at 100ms intervals; parses each snapshot immediately in the collection loop.
+Collects TCP metrics per destination IP address (IPv4 and IPv6) on Linux via **kernel `inet_diag` netlink** — the same source used by `ss` internally, but without subprocess overhead or text parsing fragility. Queries every 100ms and emits structured metrics immediately.
 
 ## Requirements
 
-- Linux with `iproute2` (`ss` command)
+- Linux kernel with `inet_diag` support (standard since kernel 2.6.14)
 - Python 3.10+
-- `click>=8.1.8` (managed automatically by uv)
+- `click>=8.1.8` and `pyroute2>=0.7` (managed automatically by uv)
+- **`CAP_NET_ADMIN` capability or root** for netlink socket access
 - [uv](https://docs.astral.sh/uv/) (recommended) or plain Python 3
 - Run on **sender side**
 
@@ -36,7 +37,7 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 
 | Option | Description |
 |--------|-------------|
-| `-a IP` | Destination IPv4 address to monitor (required) |
+| `-a IP` | Destination IP address to monitor — IPv4 or IPv6 (required) |
 | `--duration N` | Stop N seconds after the **first TCP session** is seen (N > 0). Waits indefinitely until traffic appears. |
 | `--max-samples N` | Stop after N snapshots (N ≥ 1) |
 | `--output FILE` | Write results to file instead of stdout |
@@ -44,7 +45,7 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 | `--format text\|ndjson\|csv` | Output format (default: `text`) |
 | `-v, --verbose` | Log sample count and session count to stderr each cycle |
 | `--debug` | Log detailed parse events to stderr (implies `--verbose`) |
-| `--ss-timeout N` | Max seconds to wait for ss per sample (default: `5.0`, min: `0.1`) |
+| `--poll-timeout N` | Max seconds to wait for kernel netlink response (default: `5.0`, min: `0.1`) |
 | `--version` | Print version and exit (reads `pyproject.toml` in bare-script mode) |
 
 ## Examples
@@ -142,6 +143,6 @@ Common causes: no active TCP connections to target IP; target unreachable; ss ou
 
 ## Known Limitations
 
-- **IPv4 only** — `is_valid_ipv4()` rejects IPv6 at input; `RE_TCP_SESSION_LOOKUP` only matches dotted-decimal addresses
+- **`CAP_NET_ADMIN` required** — netlink inet_diag queries require elevated privileges; run with `sudo` or grant the capability
 - `CLOSING` state sessions skipped
 - **Memory growth in default text mode** — without `--stream`, every parsed record is buffered in memory until exit so session blocks can be printed. Memory grows as `sessions × samples`. For runs longer than a few minutes or with many concurrent TCP sessions, use `--format ndjson`, `--format csv`, or `--stream` instead — these emit and discard each record immediately (O(1) memory per cycle).
