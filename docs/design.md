@@ -42,9 +42,10 @@ Single-file Python 3 script. One external dependency: `click` (CLI). Packaged wi
 _collect_snapshot(ip, shutdown_ref)
   → subprocess.run(["ss", "-H", "-n", "-i", "dst", ip])
   → filter: for each line, call _parse_session_line(); if it returns (src, dst)
-    and dst starts with "<ip>:", check next line with _RE_HAS_METRIC.
-    If both conditions met, keep the pair. Non-TCP lines, CLOSING, lines where
-    the IP appears elsewhere, and sessions without metrics are all discarded.
+    and dst.startswith(ip + ":"), check raw[i+1] with _RE_HAS_METRIC.
+    If both conditions met, append both lines as a pair to kept[].
+    Non-TCP lines, CLOSING, wrong-dst sessions, sessions without a metrics
+    line — all discarded. kept[] is guaranteed interleaved pairs.
   → return list[str]  or  None on shutdown
 
 _parse_snapshot(lines, snapshot_time, sessions, fmt, stream, out, csv_writer)

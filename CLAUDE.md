@@ -23,7 +23,7 @@ Project uses `uv` for environment management (`pyproject.toml`). One external de
 
 Single-file script (`tcp_metrics_collector.py`). Key functions:
 
-- `_collect_snapshot(ip, shutdown_ref)` → `list[str] | None` — runs `ss -H -n -i dst <ip>`, filters to session+metrics pairs; returns `None` on shutdown
+- `_collect_snapshot(ip, shutdown_ref, timeout)` → `list[str] | None` — runs `ss -H -n -i dst <ip>`, uses `_parse_session_line()` + `dst.startswith(ip+":")` + `_RE_HAS_METRIC` to build guaranteed (session, metrics) pairs; returns `None` on shutdown
 - `_parse_session_line(line)` → `(src, dst) | None`
 - `_parse_metrics_line(line)` → `dict[str, int | float | str | None] | None`
 - `_parse_snapshot(lines, ts, sessions, fmt, stream, out, csv_writer)` — steps lines in pairs (guaranteed by `_collect_snapshot`); emits immediately for ndjson/csv or `--stream`, otherwise appends to `sessions`

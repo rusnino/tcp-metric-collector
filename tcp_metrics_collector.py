@@ -91,6 +91,14 @@ def _parse_session_line(line: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 
+def _parse_raw_int(raw: dict[str, str], key: str) -> int | None:
+    v = raw.get(key)
+    try:
+        return int(v) if v is not None else None
+    except ValueError:
+        return None
+
+
 def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None:
     """Parse ss metrics line into typed fields. Returns None if not a metrics line.
 
@@ -107,13 +115,6 @@ def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None
     raw: dict[str, str] = {}
     for match in matches:
         raw[match.group(1)] = match.group(2)
-
-    def _int(key: str) -> int | None:
-        v = raw.get(key)
-        try:
-            return int(v) if v is not None else None
-        except ValueError:
-            return None
 
     rtt_ms: float | None = None
     rttvar_ms: float | None = None
@@ -136,10 +137,10 @@ def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None
             pass
 
     result: dict[str, int | float | str | None] = {
-        "cwnd":          _int("cwnd"),
-        "mss":           _int("mss"),
-        "ssthresh":      _int("ssthresh"),
-        "unacked":       _int("unacked"),
+        "cwnd":          _parse_raw_int(raw, "cwnd"),
+        "mss":           _parse_raw_int(raw, "mss"),
+        "ssthresh":      _parse_raw_int(raw, "ssthresh"),
+        "unacked":       _parse_raw_int(raw, "unacked"),
         "rtt_ms":        rtt_ms,
         "rttvar_ms":     rttvar_ms,
         "retrans_cur":   retrans_cur,

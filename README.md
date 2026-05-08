@@ -75,6 +75,9 @@ uv run tcp_metrics_collector.py -a 192.168.1.100 --debug
 
 # Long-running collection — use ndjson/csv to avoid memory growth
 uv run tcp_metrics_collector.py -a 192.168.1.100 --format ndjson | tee metrics.ndjson
+
+# Increase ss timeout on slow/loaded hosts (default 5.0s)
+uv run tcp_metrics_collector.py -a 192.168.1.100 --ss-timeout 15
 ```
 
 ## Output Formats
