@@ -1,350 +1,406 @@
-"""Unit tests for tcp_metrics_collector parsing functions."""
+"""Unit tests for tcp_metrics_collector netlink-based metric extraction."""
 
 import io
-import subprocess
 from collections import defaultdict
-from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import click
 import pytest
 
 from tcp_metrics_collector import (
     SESSION_SEP,
-    _RE_HAS_METRIC,
+    _TCP_ESTABLISHED,
     _collect_snapshot,
-    _parse_metrics_line,
-    _parse_session_line,
+    _extract_metrics,
+    _format_addr,
+    _format_rate,
     _parse_snapshot,
-    is_valid_ipv4,
+    is_valid_ip,
 )
 
-FIXTURES = Path(__file__).parent / "fixtures"
-
-
-def load_fixture(name: str) -> list[str]:
-    return (FIXTURES / name).read_text().splitlines()
-
 
 # ---------------------------------------------------------------------------
-# is_valid_ipv4
+# is_valid_ip — now accepts both IPv4 and IPv6
 # ---------------------------------------------------------------------------
 
-class TestIsValidIPv4:
-    def test_valid(self):
-        assert is_valid_ipv4("192.168.1.100") is True
+class TestIsValidIp:
+    def test_ipv4_valid(self):
+        assert is_valid_ip("192.168.1.100") is True
 
-    def test_loopback(self):
-        assert is_valid_ipv4("127.0.0.1") is True
+    def test_ipv4_loopback(self):
+        assert is_valid_ip("127.0.0.1") is True
 
-    def test_ipv6_rejected(self):
-        assert is_valid_ipv4("::1") is False
+    def test_ipv6_loopback(self):
+        assert is_valid_ip("::1") is True
 
-    def test_ipv6_full_rejected(self):
-        assert is_valid_ipv4("2001:db8::1") is False
+    def test_ipv6_full(self):
+        assert is_valid_ip("2001:db8::1") is True
 
     def test_garbage_rejected(self):
-        assert is_valid_ipv4("not-an-ip") is False
+        assert is_valid_ip("not-an-ip") is False
 
     def test_out_of_range_rejected(self):
-        assert is_valid_ipv4("999.0.0.1") is False
+        assert is_valid_ip("999.0.0.1") is False
 
 
 # ---------------------------------------------------------------------------
-# _parse_session_line
+# _format_rate
 # ---------------------------------------------------------------------------
 
-class TestParseSessionLine:
-    def test_valid_estab(self):
-        line = "tcp   ESTAB  0      0      192.168.1.50:45231   192.168.1.100:80"
-        result = _parse_session_line(line)
-        assert result == ("192.168.1.50:45231", "192.168.1.100:80")
+class TestFormatRate:
+    def test_gbps(self):
+        assert _format_rate(2e9) == "2Gbps"
 
-    def test_closing_skipped(self):
-        line = "tcp   CLOSING  0  0  192.168.1.50:45230   192.168.1.100:80"
-        assert _parse_session_line(line) is None
+    def test_mbps(self):
+        assert _format_rate(84.7e6) == "84.7Mbps"
 
-    def test_non_tcp_skipped(self):
-        line = "udp   ESTAB  0  0  192.168.1.50:1234  192.168.1.100:53"
-        assert _parse_session_line(line) is None
+    def test_kbps(self):
+        assert _format_rate(500e3) == "500Kbps"
 
-    def test_metrics_line_skipped(self):
-        line = "\t cubic wscale:7,8 rto:204 rtt:1.234/0.617 cwnd:10"
-        assert _parse_session_line(line) is None
-
-    def test_ipv6_session_not_matched(self):
-        line = "tcp   ESTAB  0  0  [2001:db8::1]:45231  [2001:db8::2]:80"
-        assert _parse_session_line(line) is None
-
-    def test_header_line_skipped(self):
-        line = "Netid State  Recv-Q Send-Q Local Address:Port    Peer Address:Port"
-        assert _parse_session_line(line) is None
+    def test_bps(self):
+        assert _format_rate(100) == "100bps"
 
 
 # ---------------------------------------------------------------------------
-# _parse_metrics_line
+# _format_addr — RFC 2732 bracket notation for IPv6
 # ---------------------------------------------------------------------------
 
-class TestParseMetricsLine:
-    def test_no_wscale_but_has_metrics_parsed(self):
-        # wscale absence no longer gates parsing — regex matches decide
-        line = "\t cubic rto:204 rtt:1.234/0.617 mss:1460 cwnd:10"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert result["cwnd"] == 10
-        assert result["rtt_ms"] == 1.234
+class TestFormatAddr:
+    def test_ipv4_no_brackets(self):
+        assert _format_addr("192.168.1.1", 80) == "192.168.1.1:80"
 
-    def test_no_metric_tokens_returns_none(self):
-        line = "\t cubic rto:204 ato:40 rcv_rtt:1 rcv_space:29200"
-        assert _parse_metrics_line(line) is None
+    def test_ipv4_loopback(self):
+        assert _format_addr("127.0.0.1", 1234) == "127.0.0.1:1234"
+
+    def test_ipv6_loopback_bracketed(self):
+        assert _format_addr("::1", 80) == "[::1]:80"
+
+    def test_ipv6_full_bracketed(self):
+        assert _format_addr("2001:db8::1", 443) == "[2001:db8::1]:443"
+
+    def test_ipv6_port_unambiguous(self):
+        # Ensure split on last ":" gives correct port in all cases
+        addr = _format_addr("2001:db8::1", 8080)
+        assert addr.endswith(":8080")
+        assert addr.startswith("[")
+
+
+# ---------------------------------------------------------------------------
+# _extract_metrics — tcp_info dict → output schema
+# ---------------------------------------------------------------------------
+
+class TestExtractMetrics:
+    def _full_tcp_info(self, **overrides) -> dict:
+        base = {
+            "tcpi_snd_cwnd": 10,
+            "tcpi_snd_mss": 1460,
+            "tcpi_snd_ssthresh": 2147483647,
+            "tcpi_unacked": 0,
+            "tcpi_rtt": 1234,       # µs → 1.234ms
+            "tcpi_rttvar": 617,     # µs → 0.617ms
+            "tcpi_retransmits": 0,
+            "tcpi_total_retrans": 2,
+        }
+        base.update(overrides)
+        return base
 
     def test_integer_fields_typed(self):
-        line = "\t cubic wscale:7,8 rto:204 mss:1460 cwnd:10 ssthresh:2147483647 unacked:0"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert result["cwnd"] == 10
-        assert isinstance(result["cwnd"], int)
-        assert result["mss"] == 1460
-        assert isinstance(result["mss"], int)
-        assert result["ssthresh"] == 2147483647
-        assert isinstance(result["ssthresh"], int)
-        assert result["unacked"] == 0
-        assert isinstance(result["unacked"], int)
+        m = _extract_metrics(self._full_tcp_info())
+        assert m["cwnd"] == 10
+        assert isinstance(m["cwnd"], int)
+        assert m["mss"] == 1460
+        assert isinstance(m["mss"], int)
+        assert m["ssthresh"] == 2147483647
+        assert m["unacked"] == 0
 
-    def test_rtt_split_into_two_floats(self):
-        line = "\t cubic wscale:7,8 rtt:1.234/0.617"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert result["rtt_ms"] == 1.234
-        assert isinstance(result["rtt_ms"], float)
-        assert result["rttvar_ms"] == 0.617
-        assert isinstance(result["rttvar_ms"], float)
+    def test_rtt_converted_from_microseconds(self):
+        m = _extract_metrics(self._full_tcp_info(tcpi_rtt=1234, tcpi_rttvar=617))
+        assert m["rtt_ms"] == pytest.approx(1.234)
+        assert m["rttvar_ms"] == pytest.approx(0.617)
 
-    def test_retrans_split_into_two_ints(self):
-        line = "\t cubic wscale:7,8 retrans:3/12"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert result["retrans_cur"] == 3
-        assert isinstance(result["retrans_cur"], int)
-        assert result["retrans_total"] == 12
-        assert isinstance(result["retrans_total"], int)
+    def test_rtt_none_when_zero(self):
+        m = _extract_metrics(self._full_tcp_info(tcpi_rtt=0, tcpi_rttvar=0))
+        assert m["rtt_ms"] is None
+        assert m["rttvar_ms"] is None
 
-    def test_retrans_zero_zero(self):
-        line = "\t cubic wscale:7,8 retrans:0/0"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert result["retrans_cur"] == 0
-        assert result["retrans_total"] == 0
+    def test_retrans_fields(self):
+        m = _extract_metrics(self._full_tcp_info(tcpi_retransmits=3, tcpi_total_retrans=12))
+        assert m["retrans_cur"] == 3
+        assert m["retrans_total"] == 12
 
-    def test_send_kept_as_string(self):
-        line = "\t cubic wscale:7,8 send 84.7Mbps"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert result["send"] == "84.7Mbps"
-        assert isinstance(result["send"], str)
+    def test_send_derived_from_cwnd_mss_rtt(self):
+        # cwnd=10, mss=1460, rtt=1000µs → 10*1460*8*1e6/1000 = 116.8e6 bps ≈ 117Mbps
+        m = _extract_metrics(self._full_tcp_info(
+            tcpi_snd_cwnd=10, tcpi_snd_mss=1460, tcpi_rtt=1000
+        ))
+        assert m["send"] is not None
+        assert "Mbps" in m["send"]
+        # Verify order of magnitude — should be ~117Mbps not ~14Mbps
+        rate_mbps = float(m["send"].replace("Mbps", ""))
+        assert rate_mbps > 100
 
-    def test_send_double_space_normalized(self):
-        line = "\t cubic wscale:7,8 send  84.7Mbps"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert result["send"] == "84.7Mbps"
+    def test_send_none_when_rtt_zero(self):
+        m = _extract_metrics(self._full_tcp_info(tcpi_rtt=0))
+        assert m["send"] is None
 
-    def test_absent_fields_are_none(self):
-        line = "\t cubic wscale:7,8 cwnd:5"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert result["rtt_ms"] is None
-        assert result["rttvar_ms"] is None
-        assert result["retrans_cur"] is None
-        assert result["retrans_total"] is None
-        assert result["send"] is None
-        assert result["mss"] is None
-
-    def test_no_type_ambiguity_absent_vs_zero(self):
-        # absent field → None, not 0
-        line = "\t cubic wscale:7,8 cwnd:5"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert result["unacked"] is None  # absent, not 0
-
-    def test_non_metric_tokens_ignored(self):
-        line = "\t cubic wscale:7,8 timer:on rto:204 cwnd:10 unknown:value"
-        result = _parse_metrics_line(line)
-        assert result is not None
-        assert "timer" not in result
-        assert "unknown" not in result
-        assert result["cwnd"] == 10
+    def test_absent_field_is_none(self):
+        m = _extract_metrics({})
+        assert m["cwnd"] is None
+        assert m["mss"] is None
+        assert m["rtt_ms"] is None
+        assert m["retrans_cur"] is None
+        assert m["send"] is None
 
 
 # ---------------------------------------------------------------------------
-# _parse_snapshot — integration of session+metrics pairing
+# _collect_snapshot — mock DiagSocket
 # ---------------------------------------------------------------------------
 
-class TestParseSnapshot:
-    def _run(self, fixture: str, ip: str = "192.168.1.100") -> dict:
-        """Run through the full production pipeline: _collect_snapshot → _parse_snapshot."""
-        with patch("subprocess.run", return_value=_make_ss_result(fixture)):
-            pairs = _collect_snapshot(ip, [False])
-        sessions: dict = defaultdict(list)
-        if pairs:
-            _parse_snapshot(pairs, 1000.0, sessions, "text", False, io.StringIO(), None)
-        return dict(sessions)
-
-    def test_single_session_parsed(self):
-        sessions = self._run("ss_estab_single.txt")
-        assert len(sessions) == 1
-        key = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
-        assert key in sessions
-        ts, metrics = sessions[key][0]
-        assert ts == 1000.0
-        assert metrics["cwnd"] == 10
-        assert metrics["mss"] == 1460
-
-    def test_multiple_sessions_not_mixed(self):
-        sessions = self._run("ss_multiple_sessions.txt")
-        assert len(sessions) == 2
-        key1 = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
-        key2 = f"192.168.1.50:45232{SESSION_SEP}192.168.1.100:443"
-        assert key1 in sessions
-        assert key2 in sessions
-        assert sessions[key1][0][1]["cwnd"] == 10
-        assert sessions[key2][0][1]["cwnd"] == 20
-        assert sessions[key1][0][1]["mss"] == 1460
-        assert sessions[key2][0][1]["mss"] == 1448
-
-    def test_closing_session_not_parsed(self):
-        sessions = self._run("ss_closing.txt")
-        assert len(sessions) == 1
-        key = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
-        assert key in sessions
-
-    def test_closing_metrics_not_leaked_to_estab(self):
-        sessions = self._run("ss_closing.txt")
-        key = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
-        metrics = sessions[key][0][1]
-        # ESTAB cwnd=10, CLOSING had cwnd=5; must be 10
-        assert metrics["cwnd"] == 10
-
-    def test_ipv6_session_produces_no_output(self):
-        sessions = self._run("ss_ipv6.txt", ip="2001:db8::2")
-        assert len(sessions) == 0
-
-    def test_no_wscale_still_parsed_if_metrics_present(self):
-        # ss_no_wscale.txt has cwnd/rtt/etc but no wscale token — must still parse
-        sessions = self._run("ss_no_wscale.txt")
-        assert len(sessions) == 1
-        key = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
-        assert key in sessions
-        metrics = sessions[key][0][1]
-        assert metrics["cwnd"] == 10
-        assert metrics["rtt_ms"] == 1.234
-
-    def test_send_only_metrics_line_not_filtered(self):
-        # Line with only "send VALUE" (space-separated) must survive _collect_snapshot
-        # filter and be parsed. Previously _RE_HAS_METRIC missed it (matched key:value only).
-        sessions = self._run("ss_send_only.txt")
-        assert len(sessions) == 1
-        key = f"192.168.1.50:45231{SESSION_SEP}192.168.1.100:80"
-        assert key in sessions
-        assert sessions[key][0][1]["send"] == "84.7Mbps"
-
-    def test_no_metric_tokens_produces_no_output(self):
-        # ss_no_metrics.txt has a metrics-style line but zero allowlisted tokens
-        sessions = self._run("ss_no_metrics.txt")
-        assert len(sessions) == 0
-
-
-# ---------------------------------------------------------------------------
-# _collect_snapshot — adjacency filter tested with mocked subprocess
-# ---------------------------------------------------------------------------
-
-def _make_ss_result(fixture: str, returncode: int = 0) -> subprocess.CompletedProcess:
-    text = (FIXTURES / fixture).read_text()
-    return subprocess.CompletedProcess(
-        args=["ss"], returncode=returncode, stdout=text, stderr=""
-    )
+def _make_sock(src_ip, src_port, dst_ip, dst_port, state=_TCP_ESTABLISHED, **tcp_info_overrides):
+    """Build a mock inet_diag_msg object matching pyroute2's get_sock_stats() return."""
+    tcp_info = {
+        "tcpi_snd_cwnd": 10,
+        "tcpi_snd_mss": 1460,
+        "tcpi_snd_ssthresh": 2147483647,
+        "tcpi_unacked": 0,
+        "tcpi_rtt": 1000,
+        "tcpi_rttvar": 500,
+        "tcpi_retransmits": 0,
+        "tcpi_total_retrans": 0,
+    }
+    tcp_info.update(tcp_info_overrides)
+    # pyroute2 returns nlmsg objects that behave like dicts for scalar fields
+    # but use get_attr() for NLA attributes (attrs is a list of tuples)
+    sock = MagicMock()
+    sock.get = lambda key, default=None: {
+        "idiag_state": state,
+        "idiag_src": src_ip,
+        "idiag_dst": dst_ip,
+        "idiag_sport": src_port,
+        "idiag_dport": dst_port,
+    }.get(key, default)
+    sock.get_attr = lambda key: tcp_info if key == "INET_DIAG_INFO" else None
+    return sock
 
 
 class TestCollectSnapshot:
-    def test_session_and_metric_line_kept(self):
-        with patch("subprocess.run", return_value=_make_ss_result("ss_estab_single.txt")):
-            kept = _collect_snapshot("192.168.1.100", [False])
-        assert kept is not None
-        assert len(kept) == 2
-        assert "192.168.1.100" in kept[0]   # session line
-        assert "cwnd" in kept[1]             # metrics line
+    def _run(self, ip: str, sockets: list) -> list | None:
+        mock_ds = MagicMock()
+        mock_ds.__enter__ = MagicMock(return_value=mock_ds)
+        mock_ds.__exit__ = MagicMock(return_value=False)
+        mock_ds.get_sock_stats.return_value = sockets
 
-    def test_header_line_not_kept(self):
-        # ss_estab_single.txt has a Netid/State header; -H flag removes it in production
-        # but our fixture includes it to test that the filter correctly ignores it
-        with patch("subprocess.run", return_value=_make_ss_result("ss_estab_single.txt")):
-            kept = _collect_snapshot("192.168.1.100", [False])
-        assert kept is not None
-        assert not any("Netid" in line for line in kept)
+        with patch("tcp_metrics_collector.DiagSocket", return_value=mock_ds):
+            return _collect_snapshot(ip, [False])
 
-    def test_send_only_metric_line_kept(self):
-        # Fixture has metrics line with only "send VALUE" (space-separated).
-        # _RE_HAS_METRIC must match it so it survives the filter.
-        with patch("subprocess.run", return_value=_make_ss_result("ss_send_only.txt")):
-            kept = _collect_snapshot("192.168.1.100", [False])
-        assert kept is not None
-        assert len(kept) == 2
-        assert "send 84.7Mbps" in kept[1]
+    def test_single_session_returned(self):
+        socks = [_make_sock("192.168.1.50", 45231, "192.168.1.100", 80)]
+        records = self._run("192.168.1.100", socks)
+        assert records is not None
+        assert len(records) == 1
+        src, dst, metrics = records[0]
+        assert src == "192.168.1.50:45231"
+        assert dst == "192.168.1.100:80"
+        assert metrics["cwnd"] == 10
 
-    def test_send_double_space_metric_line_kept(self):
-        # "send  84.7Mbps" (two spaces) — _RE_HAS_METRIC must match \s+
-        with patch("subprocess.run", return_value=_make_ss_result("ss_send_doublespace.txt")):
-            kept = _collect_snapshot("192.168.1.100", [False])
-        assert kept is not None
-        assert len(kept) == 2
-        assert "send  84.7Mbps" in kept[1]
+    def test_non_established_sessions_excluded(self):
+        socks = [
+            _make_sock("192.168.1.50", 1234, "192.168.1.100", 80, state=2),  # SYN_SENT
+            _make_sock("192.168.1.50", 5678, "192.168.1.100", 80, state=1),  # ESTABLISHED
+        ]
+        records = self._run("192.168.1.100", socks)
+        assert records is not None
+        assert len(records) == 1
+        assert records[0][0] == "192.168.1.50:5678"
 
-    def test_multiple_sessions_all_pairs_kept(self):
-        with patch("subprocess.run", return_value=_make_ss_result("ss_multiple_sessions.txt")):
-            kept = _collect_snapshot("192.168.1.100", [False])
-        assert kept is not None
-        # 2 sessions × 2 lines each
-        assert len(kept) == 4
+    def test_wrong_dst_excluded(self):
+        socks = [
+            _make_sock("192.168.1.50", 1234, "10.0.0.1", 80),     # different dst
+            _make_sock("192.168.1.50", 5678, "192.168.1.100", 80), # correct dst
+        ]
+        records = self._run("192.168.1.100", socks)
+        assert records is not None
+        assert len(records) == 1
+        assert records[0][1] == "192.168.1.100:80"
 
-    def test_no_metric_line_session_not_kept(self):
-        # ss_no_metrics.txt: adjacent line has no allowlisted tokens.
-        # Pair-based filter keeps neither line — no complete pair exists.
-        with patch("subprocess.run", return_value=_make_ss_result("ss_no_metrics.txt")):
-            kept = _collect_snapshot("192.168.1.100", [False])
-        assert kept is not None
-        assert len(kept) == 0
+    def test_empty_result_on_no_sessions(self):
+        records = self._run("192.168.1.100", [])
+        assert records == []
 
-    def test_shutdown_during_ss_returns_none(self):
+    def test_shutdown_returns_none(self):
+        def _side_effect(*_, **__):
+            raise Exception("should not be called")
+
+        with patch("tcp_metrics_collector.DiagSocket") as MockDS:
+            # Simulate shutdown set before call
+            result = _collect_snapshot("192.168.1.100", [True])
+        assert result is None
+
+    def test_shutdown_after_query_returns_none(self):
+        socks = [_make_sock("192.168.1.50", 45231, "192.168.1.100", 80)]
         shutdown = [False]
 
-        def _side_effect(*args, **kwargs):
-            shutdown[0] = True  # simulate SIGINT arriving while ss runs
-            return subprocess.CompletedProcess(args=["ss"], returncode=0, stdout="", stderr="")
+        mock_ds = MagicMock()
+        mock_ds.__enter__ = MagicMock(return_value=mock_ds)
+        mock_ds.__exit__ = MagicMock(return_value=False)
 
-        with patch("subprocess.run", side_effect=_side_effect):
+        def _get_stats(*_, **__):
+            shutdown[0] = True  # signal arrives during query
+            return socks
+
+        mock_ds.get_sock_stats.side_effect = _get_stats
+
+        with patch("tcp_metrics_collector.DiagSocket", return_value=mock_ds):
             result = _collect_snapshot("192.168.1.100", shutdown)
         assert result is None
 
-    def test_nonzero_returncode_raises(self):
-        bad = subprocess.CompletedProcess(args=["ss"], returncode=1, stdout="", stderr="oops")
-        with patch("subprocess.run", return_value=bad):
-            with pytest.raises(click.ClickException, match="oops"):
-                _collect_snapshot("192.168.1.100", [False])
+    def test_timeout_raises_click_exception(self):
+        import time
+        import threading
 
-    def test_file_not_found_raises(self):
-        with patch("subprocess.run", side_effect=FileNotFoundError):
-            with pytest.raises(click.ClickException, match="iproute2"):
-                _collect_snapshot("192.168.1.100", [False])
+        mock_ds = MagicMock()
+        mock_ds.__enter__ = MagicMock(return_value=mock_ds)
+        mock_ds.__exit__ = MagicMock(return_value=False)
 
-    def test_timeout_raises(self):
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ss", timeout=5.0)):
-            with pytest.raises(click.ClickException, match="5.0"):
-                _collect_snapshot("192.168.1.100", [False])
+        def _slow_query(*_, **__):
+            time.sleep(10)  # hangs — join(timeout) fires before this
+
+        mock_ds.get_sock_stats.side_effect = _slow_query
+
+        non_daemon_before = sum(1 for t in threading.enumerate() if not t.daemon)
+
+        with patch("tcp_metrics_collector.DiagSocket", return_value=mock_ds):
+            with pytest.raises(click.ClickException, match="0.05"):
+                _collect_snapshot("192.168.1.100", [False], timeout=0.05)
+
+        # Worker thread must be daemon — no new non-daemon threads should remain
+        non_daemon_after = sum(1 for t in threading.enumerate() if not t.daemon)
+        assert non_daemon_after == non_daemon_before
 
     def test_timeout_with_shutdown_returns_none(self):
-        # Ctrl+C while ss is hung: TimeoutExpired fires but shutdown is already set.
-        # Must return None (clean exit) so buffered text results are printed.
-        shutdown = [True]
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ss", timeout=5.0)):
-            result = _collect_snapshot("192.168.1.100", shutdown)
+        import time
+        import threading
+
+        mock_ds = MagicMock()
+        mock_ds.__enter__ = MagicMock(return_value=mock_ds)
+        mock_ds.__exit__ = MagicMock(return_value=False)
+
+        shutdown = [False]
+
+        def _slow_query(*_, **__):
+            shutdown[0] = True
+            time.sleep(10)
+
+        mock_ds.get_sock_stats.side_effect = _slow_query
+
+        non_daemon_before = sum(1 for t in threading.enumerate() if not t.daemon)
+
+        with patch("tcp_metrics_collector.DiagSocket", return_value=mock_ds):
+            result = _collect_snapshot("192.168.1.100", shutdown, timeout=0.05)
         assert result is None
+
+        non_daemon_after = sum(1 for t in threading.enumerate() if not t.daemon)
+        assert non_daemon_after == non_daemon_before
+
+    def test_oserror_raises_click_exception(self):
+        mock_ds = MagicMock()
+        mock_ds.__enter__ = MagicMock(return_value=mock_ds)
+        mock_ds.__exit__ = MagicMock(return_value=False)
+        mock_ds.get_sock_stats.side_effect = OSError("permission denied")
+
+        with patch("tcp_metrics_collector.DiagSocket", return_value=mock_ds):
+            with pytest.raises(click.ClickException, match="permission denied"):
+                _collect_snapshot("192.168.1.100", [False])
+
+    def test_multiple_sessions_all_returned(self):
+        socks = [
+            _make_sock("192.168.1.50", 45231, "192.168.1.100", 80, tcpi_snd_cwnd=10),
+            _make_sock("192.168.1.50", 45232, "192.168.1.100", 443, tcpi_snd_cwnd=20),
+        ]
+        records = self._run("192.168.1.100", socks)
+        assert records is not None
+        assert len(records) == 2
+        cwnds = {r[2]["cwnd"] for r in records}
+        assert cwnds == {10, 20}
+
+    def test_ipv6_dst_filter(self):
+        socks = [
+            _make_sock("::1", 45231, "::1", 80),
+            _make_sock("::1", 45232, "2001:db8::1", 80),
+        ]
+        records = self._run("::1", socks)
+        assert records is not None
+        assert len(records) == 1
+        assert records[0][1] == "[::1]:80"
+
+    def test_ipv6_non_canonical_input_matches(self):
+        # Kernel may return compressed "2001:db8::1"; user may pass expanded form.
+        # Both must match after canonical normalisation.
+        socks = [_make_sock("::1", 45231, "2001:db8::1", 80)]
+        # Pass expanded form — should still match compressed kernel output
+        records = self._run("2001:0db8:0:0:0:0:0:1", socks)
+        assert records is not None
+        assert len(records) == 1
+
+    def test_ipv6_src_address_normalised_in_output(self):
+        # Source address from kernel is already compressed by pyroute2,
+        # but verify it passes through correctly.
+        socks = [_make_sock("2001:db8::2", 45231, "2001:db8::1", 80)]
+        records = self._run("2001:db8::1", socks)
+        assert records is not None
+        assert records[0][0] == "[2001:db8::2]:45231"  # [addr]:port RFC 2732
+
+
+# ---------------------------------------------------------------------------
+# _parse_snapshot — structured records in, buffered or streamed out
+# ---------------------------------------------------------------------------
+
+class TestParseSnapshot:
+    def _record(self, src="192.168.1.50:1234", dst="192.168.1.100:80", cwnd=10):
+        return (src, dst, {
+            "cwnd": cwnd, "mss": 1460, "ssthresh": 2147483647, "unacked": 0,
+            "rtt_ms": 1.234, "rttvar_ms": 0.617,
+            "retrans_cur": 0, "retrans_total": 0, "send": "14.6Mbps",
+        })
+
+    def test_text_mode_buffers_to_sessions(self):
+        sessions: dict = defaultdict(list)
+        _parse_snapshot(
+            [self._record()], 1000.0, sessions,
+            "text", False, io.StringIO(), None
+        )
+        key = f"192.168.1.50:1234{SESSION_SEP}192.168.1.100:80"
+        assert key in sessions
+        assert sessions[key][0][0] == 1000.0
+        assert sessions[key][0][1]["cwnd"] == 10
+
+    def test_ndjson_mode_emits_immediately(self):
+        out = io.StringIO()
+        sessions: dict = defaultdict(list)
+        _parse_snapshot(
+            [self._record()], 1000.0, sessions, "ndjson", False, out, None
+        )
+        assert len(sessions) == 0  # not buffered
+        line = out.getvalue().strip()
+        import json
+        obj = json.loads(line)
+        assert obj["cwnd"] == 10
+        assert obj["src"] == "192.168.1.50:1234"
+
+    def test_stream_mode_emits_immediately(self):
+        out = io.StringIO()
+        sessions: dict = defaultdict(list)
+        _parse_snapshot(
+            [self._record()], 1000.0, sessions, "text", True, out, None
+        )
+        assert len(sessions) == 0
+        assert "192.168.1.50:1234" in out.getvalue()
+
+    def test_two_records_both_buffered(self):
+        records = [
+            self._record("192.168.1.50:1", "192.168.1.100:80", cwnd=10),
+            self._record("192.168.1.50:2", "192.168.1.100:443", cwnd=20),
+        ]
+        sessions: dict = defaultdict(list)
+        _parse_snapshot(records, 1000.0, sessions, "text", False, io.StringIO(), None)
+        assert len(sessions) == 2

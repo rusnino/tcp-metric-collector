@@ -2,18 +2,19 @@
 
 ## Purpose
 
-Passive TCP performance monitoring tool. Captures kernel-level TCP metrics for all active sessions to a target IP by periodically querying `ss` (socket statistics). Intended for diagnosing congestion, retransmission, and throughput issues on sender-side Linux hosts.
+Passive TCP performance monitoring tool. Captures kernel-level TCP metrics for all ESTABLISHED sessions to a target IP by querying the kernel `inet_diag` netlink interface every 100ms. Intended for diagnosing congestion, retransmission, and throughput issues on sender-side Linux hosts.
 
 ## Requirements
 
 - Python 3.10+
-- Linux with `iproute2` installed
-- `click>=8.1.8`
+- Linux kernel ≥2.6.14 (inet_diag netlink)
+- `CAP_NET_ADMIN` or root
+- `click>=8.1.8`, `pyroute2>=0.7`
 - [uv](https://docs.astral.sh/uv/) (optional, recommended for running)
 
 ## Architecture
 
-Single-file Python 3 script. One external dependency: `click` (CLI). Packaged with `uv` (`pyproject.toml`) for reproducible execution and CLI install.
+Single-file Python 3 script. Two external dependencies: `click` (CLI) and `pyroute2` (netlink). Packaged with `uv` (`pyproject.toml`) for reproducible execution and CLI install.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -23,8 +24,8 @@ Single-file Python 3 script. One external dependency: `click` (CLI). Packaged wi
 │                      │                                   │
 │               ┌──────▼──────┐                            │
 │               │ while !stop │  ← 100ms poll loop         │
-│               │ _collect()  │  subprocess.run ss         │
-│               │ _parse()    │  parse into sessions{}     │
+│               │ _collect()  │  DiagSocket.get_sock_stats │
+│               │ _extract()  │  tcp_info → MetricDict     │
 │               │ [--stream]  │  optional: emit each line  │
 │               └──────┬──────┘                            │
 │                      │ Ctrl+C / SIGTERM / --duration     │
@@ -39,32 +40,33 @@ Single-file Python 3 script. One external dependency: `click` (CLI). Packaged wi
 ### Collection + Parse (merged, runs each poll iteration)
 
 ```
-_collect_snapshot(ip, shutdown_ref)
-  → subprocess.run(["ss", "-H", "-n", "-i", "dst", ip])
-  → filter: for each line, call _parse_session_line(); if it returns (src, dst)
-    and dst.startswith(ip + ":"), check raw[i+1] with _RE_HAS_METRIC.
-    If both conditions met, append both lines as a pair to kept[].
-    Non-TCP lines, CLOSING, wrong-dst sessions, sessions without a metrics
-    line — all discarded. kept[] is guaranteed interleaved pairs.
-  → return list[str]  or  None on shutdown
+_collect_snapshot(ip, shutdown_ref, timeout)
+  → ThreadPoolExecutor wraps DiagSocket.get_sock_stats(SS_CONN, INET_DIAG_INFO_EXT)
+  → fut.result(timeout=timeout)  — raises ClickException on hang
+  → for each socket: filter idiag_state==ESTABLISHED, dst_canonical==ip_canonical
+  → _extract_metrics(tcp_info) → MetricDict
+  → _format_addr(src_canonical, sport) / _format_addr(dst_canonical, dport)
+  → return list[(src, dst, MetricDict)]  or  None on shutdown
 
-_parse_snapshot(lines, snapshot_time, sessions, fmt, stream, out, csv_writer)
-  → for i in range(0, len(lines) - 1, 2):   # step by 2 — guaranteed pairs
-      session = _parse_session_line(lines[i])     # (src, dst) or None → skip pair
-      metrics = _parse_metrics_line(lines[i + 1]) # dict or None → skip pair
+_parse_snapshot(records, snapshot_time, sessions, fmt, stream, out, csv_writer)
+  → for src, dst, metrics in records:
       if stream or fmt in (ndjson, csv):
           emit immediately → discard (O(1) memory)
       else:
           sessions[key].append((ts, metrics))      # text mode only
 ```
 
-Metrics are parsed and stored into `sessions` on every poll cycle. Raw `ss` output is never retained — only `(timestamp, dict)` tuples per session. Memory grows proportionally to **unique sessions × samples per session**, not to total raw output volume.
+Metrics structured directly from `tcp_info` kernel struct — no text parsing.
+Only `(timestamp, MetricDict)` tuples retained per session. Raw netlink data not stored.
 
 ### Session Key Format
 
-`{src_ip}:{src_port}|{dst_ip}:{dst_port}`
+`{src_addr}|{dst_addr}` where addresses use RFC 2732 notation:
+- IPv4: `192.168.1.1:80`
+- IPv6: `[2001:db8::1]:80`
 
-`|` used as separator (constant `SESSION_SEP`) — cannot appear in an IPv4 address or port number, making the key unambiguous.
+`|` used as separator (`SESSION_SEP`) — cannot appear in either format.
+IPv6 bracket notation prevents port from being ambiguous with address colons.
 
 ### Output Modes
 
@@ -93,60 +95,62 @@ Loop exits when any of these is true:
 
 ### 1. Streaming parse — no raw buffer
 
-Previous design buffered all raw `ss` output as `(float, str)` tuples in `tcp_metrics[]` and parsed only on exit. This caused unbounded memory growth even during idle runs (empty snapshot strings still appended every 100ms).
+Previous design buffered all raw `ss` stdout as `(float, str)` tuples and parsed only on exit. Caused unbounded memory growth even during idle runs (empty snapshots still appended every 100ms).
 
-Current design parses each snapshot immediately in the collection loop. Only `(timestamp, dict)` tuples are kept per session. Raw `ss` output is never stored beyond the current poll cycle.
+Current design queries structured `tcp_info` from the kernel directly. Only `(timestamp, MetricDict)` tuples retained per session. No text parsing, no subprocess, no raw buffers.
 
-### 2. `subprocess.run` instead of `os.popen`
+### 2. `inet_diag` netlink instead of `ss` subprocess
 
-`os.popen` is deprecated in Python 3. `subprocess.run` with `capture_output=True, text=True` is the idiomatic replacement. Args passed as list — no shell injection risk.
+Previous design ran `subprocess.run(["ss", "-H", "-n", "-i", "dst", ip])` every 100ms and regex-parsed the stdout text. Problems: subprocess fork/exec overhead, fragile text format, IPv4-only regex, short-lived connection blind spots between samples.
 
-### 3. `ss` instead of `/proc/net/tcp`
+Current design uses `pyroute2.DiagSocket.get_sock_stats(family, SS_CONN, INET_DIAG_INFO_EXT)` — the same kernel interface `ss` itself queries via `NETLINK_SOCK_DIAG`. Returns structured `inet_diag_msg` objects with `tcp_info` NLA attributes. No text parsing. Supported on Linux kernel ≥2.6.14.
 
-`ss` surfaces extended TCP info (`-i` flag: internal kernel socket stats — cwnd, rtt, etc.) not available in `/proc/net/tcp`. Requires `iproute2`.
+Requires `CAP_NET_ADMIN` or root.
 
-Invoked as `ss -H -n -i dst <ip>`:
-- `-H` — suppress header line (avoids filtering it out in the adjacency pass)
-- `-n` — numeric output; no port-to-service-name resolution (faster, deterministic)
-- `-i` — show internal TCP info (the metrics we collect)
-- `dst <ip>` — filter to sessions with this destination address
+### 3. `tcp_info` struct — kernel source of truth
 
-### 4. Real wall-clock timestamps — captured before ss runs
+`INET_DIAG_INFO` attribute (extension bitmask `1<<1`) requests the `tcp_info` struct attached to each socket. This is the canonical source for all metrics — the same data that `ss -i` displays. Fields are binary, typed integers (µs, segments, bytes) requiring no normalization beyond unit conversion.
 
-`snapshot_time = time()` is captured immediately before `_collect_snapshot()` is called, so the timestamp reflects when the sample was intended to be taken, not when ss finished. On a loaded host ss can take 20–80ms; capturing after the call would timestamp the end of collection, making the time-series appear jittery when ss runtime varies. Capturing before gives a consistent "sample start" anchor aligned with the monotonic tick scheduler.
+Key fields and conversions:
 
-### 5. IPv4-only validation via `is_valid_ipv4()`
+| Output field | tcp_info field | Conversion |
+|---|---|---|
+| `cwnd` | `tcpi_snd_cwnd` | direct (segments) |
+| `mss` | `tcpi_snd_mss` | direct (bytes) |
+| `ssthresh` | `tcpi_snd_ssthresh` | direct |
+| `unacked` | `tcpi_unacked` | direct (segments) |
+| `rtt_ms` | `tcpi_rtt` | ÷1000 (kernel stores µs) |
+| `rttvar_ms` | `tcpi_rttvar` | ÷1000 (kernel stores µs) |
+| `retrans_cur` | `tcpi_retransmits` | direct |
+| `retrans_total` | `tcpi_total_retrans` | direct |
+| `send` | derived | `cwnd*mss*8*1e6/rtt_us` → bits/s → formatted |
 
-`ipaddress.ip_address()` accepts both IPv4 and IPv6. Previous `is_valid_ip()` accepted IPv6 silently — the CLI would start collecting but `RE_TCP_SESSION_LOOKUP` only matches `\d+\.\d+\.\d+\.\d+` so no sessions would ever be found. User would see no output with no error.
+### 4. Real wall-clock timestamps — captured before netlink query
 
-Fixed by checking `isinstance(..., ipaddress.IPv4Address)`. IPv6 input fails immediately: `'::1' is not a valid IPv4 address.`
+`snapshot_time = time()` captured immediately before `_collect_snapshot()`. Netlink queries are local kernel calls (<1ms normally) but timestamping before ensures the anchor reflects sample intent, not query completion time. Aligned with monotonic tick scheduler.
+
+### 5. IPv4 and IPv6 support via `is_valid_ip()`
+
+`is_valid_ip()` accepts both families. `AF_INET6` selected when `":" in ip`. IPv6 addresses normalised to compressed form (`ipaddress.ip_address(addr).compressed`) before comparison with `idiag_dst`/`idiag_src` — prevents mismatch between user-supplied expanded form and kernel-returned compressed form. Output uses RFC 2732 bracket notation: `[2001:db8::1]:80`.
 
 ### 6. SIGTERM handling
 
 Both `SIGINT` (Ctrl+C) and `SIGTERM` (`kill`) set a `shutdown` flag. The loop exits cleanly after the current iteration, then calls `_print_sessions()` (or skips it in `--stream` mode where output was already emitted).
 
-### 7. `--format text|ndjson|csv` — proper structured output
+### 7. `--format text|ndjson|csv` and typed metric schema
 
-Previous output did `metric[1:-1]` — stripped `{` and `}` from `json.dumps()`. Looked like JSON fields but was not valid JSON. Could not be piped to `jq`, parsed by CSV readers, or consumed by any standard tooling.
+`--format ndjson` emits one valid JSON object per line (`{"ts":..., "src":..., "dst":..., <metrics>}`). `--format csv` emits RFC 4180 CSV with a header row. Both always stream per-record. `--format text` (default) buffers and prints session blocks on exit.
 
-`_parse_session_line()` now returns `(src, dst)` tuple. `_parse_metrics_line()` returns a typed `dict` — not pre-serialised strings.
+All fields are typed directly from `tcp_info` kernel struct. No string-to-int coercion needed:
 
-`--format ndjson` emits one valid JSON object per line. `--format csv` emits RFC 4180 CSV with a header row. Both always stream per-record. `--format text` (default) preserves human-readable session block output.
+| Field | Type | Source |
+|-------|------|--------|
+| `cwnd`, `mss`, `ssthresh`, `unacked` | `int \| None` | Direct from tcp_info (None if field is 0/absent) |
+| `rtt_ms`, `rttvar_ms` | `float \| None` | `tcpi_rtt` / `tcpi_rttvar` ÷ 1000 (µs → ms) |
+| `retrans_cur`, `retrans_total` | `int \| None` | `tcpi_retransmits` / `tcpi_total_retrans` |
+| `send` | `str \| None` | Derived rate string — `None` if rtt=0 |
 
-### 7a. Typed metric schema — no int/str ambiguity
-
-Previous `_parse_metrics_line()` initialised all fields as `int 0` then overwrote found values with `str` from regex. Same field could be `"10"` (str) when present or `0` (int) when absent — type was unpredictable.
-
-Current schema:
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `cwnd`, `mss`, `ssthresh`, `unacked` | `int \| None` | Direct integer parse |
-| `rtt_ms`, `rttvar_ms` | `float \| None` | Split from `rtt:X/Y` |
-| `retrans_cur`, `retrans_total` | `int \| None` | Split from `retrans:X/Y` |
-| `send` | `str \| None` | Kept as string; unit varies (Mbps/Kbps/Gbps) |
-
-`None` means absent in ss output — distinguishable from `0` (present but zero). `json.dumps()` serialises `None` as JSON `null` natively.
+`None` serialises as JSON `null` natively. CSV absent fields are empty cells (see Known Limitations).
 
 ### 8. `click` instead of `argparse`
 
@@ -156,69 +160,37 @@ Current schema:
 
 `pyproject.toml` declares `[project.scripts]` entrypoint for `uvx --from . tcp-metric-collector`. PEP 723 inline script metadata enables `uv run tcp_metrics_collector.py` without project setup. `hatchling` build backend with explicit `packages` config for flat single-file module.
 
-### 10. `send` metric normalization
+### 10. `send` rate — derived from tcp_info
 
-`ss` outputs send rate as `send Xbps` (space-separated). Normalised to `send:Xbps` before regex matching.
+`send` is not a direct tcp_info field. Derived as:
+```
+send_bps = tcpi_snd_cwnd * tcpi_snd_mss * 8 * 1_000_000 / tcpi_rtt
+```
+Where `tcpi_rtt` is in microseconds. Matches the formula used by `ss` iproute2 internally (`cwnd * mss * 8000 / rtt_ms`). Result formatted via `_format_rate()` as e.g. `"84.7Mbps"`.
 
 ### 11. Monotonic tick scheduler
 
-`sleep(DEFAULT_SLEEP)` after each `ss` call caused effective interval of `runtime(ss) + 100ms`. On a busy host ss can take 20–80ms, making the interval non-uniform and cumulative drift observable in cwnd/RTT series.
+`sleep(DEFAULT_SLEEP)` after each poll caused effective interval of `runtime(query) + 100ms`. Netlink queries are <1ms locally so drift is minimal, but the tick scheduler ensures correctness regardless.
 
-Fix: `next_tick` advances by exactly `DEFAULT_SLEEP` each iteration. `sleep(max(0, next_tick - monotonic()))` sleeps only the remaining budget. If ss overruns, sleep is skipped. `monotonic()` used for scheduling; `time()` for output timestamps (wall-clock, needed for external correlation).
+Fix: `next_tick` advances by exactly `DEFAULT_SLEEP` each iteration. `sleep(max(0, next_tick - monotonic()))` sleeps only the remaining budget. If the query overruns `DEFAULT_SLEEP`, sleep is skipped. `monotonic()` for scheduling; `time()` for output timestamps.
 
-### 12. Pair-based pipeline — filter and parser both step by 2
+### 12. Daemon thread for netlink timeout
 
-`_collect_snapshot()` produces `lines` as guaranteed pairs: `[session₀, metrics₀, session₁, metrics₁, …]`. Only complete pairs are kept — session lines without an adjacent metrics line are discarded at filter time.
+`DiagSocket.get_sock_stats()` is a blocking kernel call that cannot be interrupted from userspace. To enforce `--poll-timeout`, the call runs in a `threading.Thread(daemon=True)`. The main thread calls `thread.join(timeout=poll_timeout)` and checks `thread.is_alive()`.
 
-`_parse_snapshot()` steps over `lines` in strides of 2 (`range(0, len(lines)-1, 2)`), accessing `lines[i]` (session) and `lines[i+1]` (metrics) without bounds checks. No `curr_session` state persists. A session line that fails `_parse_session_line()` skips the pair; no metric can leak to a different session.
+If timed out, the thread is abandoned. As a daemon it does not prevent process exit and does not accumulate as a non-daemon thread across repeated timeouts. When the kernel eventually responds, the abandoned thread exits silently.
 
-### 13. Metric line detection by content, not by wscale token
+### 13. No `sys.exit()` in `run()` — idiomatic Click
 
-Previously `_parse_metrics_line()` returned `None` if `"wscale"` was not in the line, and `_collect_snapshot()` filtered adjacency by `"wscale" in line`. This created a hard dependency on `wscale` appearing in ss output — a configuration detail that can vary (e.g. `ss` output without window scaling negotiated, or future ss versions).
+`sys.exit(0)` was called at the end of `run()` and `sys.exit(1)` on collection failure. Click manages exit codes itself; calling `sys.exit()` inside a Click command bypasses that and makes `CliRunner`-based testing awkward (the runner catches `SystemExit`, so tests worked, but it's non-idiomatic).
 
-The contract is: a line is a metrics line if it matches `_RE_HAS_METRIC`:
-
-```python
-_RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP + r"|\bsend\s+\S")
-```
-
-Two forms are accepted:
-- **`key:value`** — any of the 7 allowlisted tokens (`cwnd`, `rtt`, `mss`, `ssthresh`, `send`, `unacked`, `retrans`) in colon-separated form.
-- **`send VALUE`** — send rate in space-separated form (e.g. `send 84.7Mbps`), which `ss` emits without a colon. `_parse_metrics_line()` normalises this to `send:VALUE` before regex matching; `_RE_HAS_METRIC` must detect it in pre-normalised form to avoid filtering it out in `_collect_snapshot()`.
-
-**Usage split:**
-- `_collect_snapshot()` uses `_RE_HAS_METRIC` as a pre-filter to decide which lines to keep (adjacency check, line 169). It runs against the raw, un-normalised line.
-- `_parse_metrics_line()` does **not** use `_RE_HAS_METRIC`. It normalises `send VALUE` → `send:VALUE` first, then matches with `RE_TCP_METRIC_PARAM_LOOKUP` (the base pattern). This is correct: the parser operates on a single line in isolation and can normalise before matching.
-
-The two components are kept semantically consistent: `_RE_HAS_METRIC` detects both the colon-form and the raw space-form so the pre-filter accepts every line the parser can handle. If a new metric form is added to `_parse_metrics_line`, `_RE_HAS_METRIC` must be updated accordingly. `wscale` is no longer special-cased anywhere.
-
-### 14. `SS_TIMEOUT` / `--ss-timeout` — configurable ss execution limit
-
-`subprocess.run(["ss", ...])` previously had no timeout. If ss hung (kernel/netlink issue, overloaded host), the collector blocked indefinitely.
-
-`SS_TIMEOUT = 5.0` is the default. Exposed as `--ss-timeout N` (min 0.1s) so users on very loaded or slow hosts can increase it without false timeout errors. The value is passed through `run()` → `_collect_snapshot(timeout=ss_timeout)`.
-
-On `TimeoutExpired`: if `shutdown_ref` is set (Ctrl+C while ss hung), returns `None` (clean exit, buffered results printed). Otherwise raises `click.ClickException`.
-
-### 15. No `sys.exit()` in `run()` — idiomatic Click
-
-`sys.exit(0)` was called at the end of `run()` and `sys.exit(1)` on ss failure. Click manages exit codes itself; calling `sys.exit()` inside a Click command bypasses that and makes `CliRunner`-based testing awkward (the runner catches `SystemExit`, so tests worked, but it's non-idiomatic).
-
-`run()` now returns normally on success. The ss failure path raises `click.ClickException(msg)` — Click catches it, prints `Error: <msg>` to stderr, and exits with code 1.
-
-## Regex Patterns
-
-| Pattern | Purpose |
-|---------|---------|
-| `RE_TCP_SESSION_LOOKUP` | Raw pattern string for session line — compiled as `_RE_TCP_SESSION` |
-| `_RE_TCP_SESSION` | Compiled `RE_TCP_SESSION_LOOKUP`; extracts `(src_ip:port, dst_ip:port)` |
-| `_RE_TCP_PREFIX` | `\btcp\s` — fast pre-check in `_parse_session_line()` before full regex |
-| `RE_TCP_METRIC_PARAM_LOOKUP` | Raw pattern for metric `key:value` — used to build `_RE_HAS_METRIC` and in `_parse_metrics_line()` |
-| `_RE_HAS_METRIC` | Compiled pre-filter in `_collect_snapshot()`: `RE_TCP_METRIC_PARAM_LOOKUP \| \bsend\s+\S` |
+`run()` now returns normally on success. The failure path raises `click.ClickException(msg)` — Click catches it, prints `Error: <msg>` to stderr, and exits with code 1.
 
 ## Known Limitations
 
-- **IPv4 only**: enforced at input by `is_valid_ipv4()`.
-- **In-memory accumulation (text mode only)**: `sessions` dict grows with session count × duration, but only in `--format text` without `--stream`. In all other modes (`ndjson`, `csv`, `text --stream`) records are emitted and discarded — memory is O(1) per cycle.
+- **`CAP_NET_ADMIN` required**: inet_diag queries need elevated privileges; run with `sudo` or grant the capability.
+- **Only ESTABLISHED sessions**: `SS_CONN` bitmask includes SYN_SENT/SYN_RECV but the filter accepts only `idiag_state == 1` (ESTABLISHED). Short-lived connections that never reach ESTABLISHED are invisible.
+- **In-memory accumulation (text mode only)**: `sessions` dict grows with session count × duration, but only in `--format text` without `--stream`. All other modes emit and discard per-record (O(1) memory per cycle).
+- **`send` is derived**: computed as `cwnd * mss * 8e6 / rtt_us` — a bandwidth estimate, not a direct kernel measurement. May differ from kernel pacing rate in congestion.
+- **CSV null representation**: absent metric fields are empty cells (`csv.DictWriter` default), not `"null"`. NDJSON uses JSON `null`. Consumers must normalise at read time.
 - **Output format**: `--format ndjson` or `--format csv` for machine-readable output. `text` format is human-readable only.
-- **CSV null representation**: absent metric fields are empty cells (Python `csv.DictWriter` default), not the string `"null"`. NDJSON uses JSON `null`. Consumers that rely on a single absent-value sentinel across formats must normalise at read time.

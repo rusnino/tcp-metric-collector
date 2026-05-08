@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["click>=8.1.8"]
+# dependencies = ["click>=8.1.8", "pyroute2>=0.7"]
 # ///
 #
 # TCP Metrics Collector
@@ -11,14 +11,17 @@ import ipaddress
 import json
 import re
 import signal
-import subprocess
 import sys
+import threading
 from collections import defaultdict
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from socket import AF_INET, AF_INET6
 from time import monotonic, sleep, time
 from typing import TextIO
 
 import click
+from pyroute2 import DiagSocket
+from pyroute2.netlink.diag import SS_CONN
 
 try:
     _VERSION = _pkg_version("tcp-metric-collector")
@@ -37,11 +40,18 @@ except PackageNotFoundError:
         _VERSION = "unknown"
 
 DEFAULT_SLEEP: float = 0.1
-SS_TIMEOUT: float = 5.0   # max seconds to wait for ss before raising an error
+POLL_TIMEOUT: float = 5.0   # netlink socket timeout per query
 SESSION_SEP = "|"
 
+# inet_diag extension bitmask: request INET_DIAG_INFO (tcp_info struct).
+# The INET_DIAG_INFO extension has index 1; the bitmask is 1<<1 = 2.
+_INET_DIAG_INFO_EXT: int = 1 << 1
+
+# TCP state value for ESTABLISHED (from linux/tcp.h TCP_ESTABLISHED = 1)
+_TCP_ESTABLISHED: int = 1
+
 # Typed metric fields in output. rtt split into rtt_ms/rttvar_ms; retrans split
-# into retrans_cur/retrans_total; send kept as string (unit varies: Mbps/Kbps).
+# into retrans_cur/retrans_total; send is a derived rate string.
 CSV_FIELDS = (
     "ts", "src", "dst",
     "cwnd", "mss", "ssthresh", "unacked",
@@ -50,19 +60,19 @@ CSV_FIELDS = (
     "send",
 )
 
-RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+:\S+)\s+(\d+\.\d+\.\d+\.\d+:\S+)$"
-_RE_TCP_SESSION = re.compile(RE_TCP_SESSION_LOOKUP)  # compiled form for repeated calls
-_RE_TCP_PREFIX = re.compile(r"\btcp\s")              # fast pre-check before full session regex
-RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans):(\S+)"
-# Compiled fast-check: is a line a ss metrics line at all?
-# Matches standard key:value tokens OR "send VALUE" (space-separated in ss output).
-# Used only by _collect_snapshot() as a pre-filter (not by _parse_metrics_line).
-# If a new metric form is added to _parse_metrics_line, add a matching
-# alternation here so the line reaches the parser.
-_RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP + r"|\bsend\s+\S")
-
 _verbose = False
 _debug = False
+
+# Metric record type alias
+MetricDict = dict[str, int | float | str | None]
+SnapshotRecord = tuple[str, str, MetricDict]  # (src, dst, metrics)
+
+
+def _format_addr(ip: str, port: int) -> str:
+    """Format IP:port unambiguously. IPv6 uses [addr]:port (RFC 2732)."""
+    if ":" in ip:
+        return f"[{ip}]:{port}"
+    return f"{ip}:{port}"
 
 
 def _log(msg: str) -> None:
@@ -75,144 +85,165 @@ def _dbg(msg: str) -> None:
         click.echo(f"[DEBUG] {msg}", file=sys.stderr)
 
 
-def is_valid_ipv4(ip: str) -> bool:
+def is_valid_ip(ip: str) -> bool:
+    """Accept both IPv4 and IPv6 addresses."""
     try:
-        return isinstance(ipaddress.ip_address(ip), ipaddress.IPv4Address)
+        ipaddress.ip_address(ip)
+        return True
     except ValueError:
         return False
 
 
-def _parse_session_line(line: str) -> tuple[str, str] | None:
-    if not _RE_TCP_PREFIX.search(line) or "CLOSING" in line:
-        _dbg(f"session line not TCP/CLOSING: {line.strip()!r}")
-        return None
-    m = _RE_TCP_SESSION.search(line.strip())
-    if not m:
-        _dbg(f"session regex no match: {line.strip()!r}")
-        return None
-    return m.group(1), m.group(2)
+def _format_rate(bps: float) -> str:
+    """Format bits-per-second as human-readable rate string (e.g. '84.7Mbps')."""
+    if bps >= 1e9:
+        return f"{bps / 1e9:.3g}Gbps"
+    if bps >= 1e6:
+        return f"{bps / 1e6:.3g}Mbps"
+    if bps >= 1e3:
+        return f"{bps / 1e3:.3g}Kbps"
+    return f"{bps:.3g}bps"
 
 
-def _parse_raw_int(raw: dict[str, str], key: str) -> int | None:
-    v = raw.get(key)
-    try:
-        return int(v) if v is not None else None
-    except ValueError:
-        return None
+def _extract_metrics(tcp_info: dict) -> MetricDict:
+    """Map tcp_info fields to the output metric schema.
 
-
-def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None:
-    """Parse ss metrics line into typed fields. Returns None if not a metrics line.
-
-    Integer fields: cwnd, mss, ssthresh, unacked, retrans_cur, retrans_total
-    Float fields:   rtt_ms, rttvar_ms
-    String fields:  send  (unit varies: e.g. "84.7Mbps")
-    None:           field absent in ss output
+    All integer/float fields come directly from the kernel tcp_info struct.
+    send is derived: cwnd * mss * 8 * 1e6 / rtt_us (bits in flight / rtt in seconds).
     """
-    normalized = re.sub(r"\bsend\s+", "send:", line, count=1) if re.search(r"\bsend\s", line) else line
-    matches = list(re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized))
-    if not matches:
-        return None
+    rtt_us: int = tcp_info.get("tcpi_rtt", 0) or 0
+    rttvar_us: int = tcp_info.get("tcpi_rttvar", 0) or 0
+    cwnd: int | None = tcp_info.get("tcpi_snd_cwnd")
+    mss: int | None = tcp_info.get("tcpi_snd_mss")
+    ssthresh: int | None = tcp_info.get("tcpi_snd_ssthresh")
+    unacked: int | None = tcp_info.get("tcpi_unacked")
 
-    raw: dict[str, str] = {}
-    for match in matches:
-        raw[match.group(1)] = match.group(2)
+    rtt_ms: float | None = rtt_us / 1000.0 if rtt_us else None
+    rttvar_ms: float | None = rttvar_us / 1000.0 if rttvar_us else None
 
-    rtt_ms: float | None = None
-    rttvar_ms: float | None = None
-    if "rtt" in raw:
-        parts = raw["rtt"].split("/")
-        try:
-            rtt_ms = float(parts[0])
-            rttvar_ms = float(parts[1]) if len(parts) > 1 else None
-        except ValueError:
-            pass
+    send: str | None = None
+    if cwnd and mss and rtt_us:
+        # bps = bits_in_flight / rtt_seconds = cwnd*mss*8 / (rtt_us/1e6)
+        # = cwnd * mss * 8 * 1e6 / rtt_us  (matches ss iproute2 formula)
+        send = _format_rate(cwnd * mss * 8 * 1_000_000 / rtt_us)
 
-    retrans_cur: int | None = None
-    retrans_total: int | None = None
-    if "retrans" in raw:
-        parts = raw["retrans"].split("/")
-        try:
-            retrans_cur = int(parts[0])
-            retrans_total = int(parts[1]) if len(parts) > 1 else None
-        except ValueError:
-            pass
-
-    result: dict[str, int | float | str | None] = {
-        "cwnd":          _parse_raw_int(raw, "cwnd"),
-        "mss":           _parse_raw_int(raw, "mss"),
-        "ssthresh":      _parse_raw_int(raw, "ssthresh"),
-        "unacked":       _parse_raw_int(raw, "unacked"),
+    return {
+        "cwnd":          cwnd,
+        "mss":           mss,
+        "ssthresh":      ssthresh,
+        "unacked":       unacked,
         "rtt_ms":        rtt_ms,
         "rttvar_ms":     rttvar_ms,
-        "retrans_cur":   retrans_cur,
-        "retrans_total": retrans_total,
-        "send":          raw.get("send"),
+        "retrans_cur":   tcp_info.get("tcpi_retransmits"),
+        "retrans_total": tcp_info.get("tcpi_total_retrans"),
+        "send":          send,
     }
-    _dbg(f"parsed metrics: {result}")
-    return result
 
 
 def _collect_snapshot(
-    ip: str, shutdown_ref: list[bool], timeout: float = SS_TIMEOUT
-) -> list[str] | None:
-    """Run ss and return filtered lines. Returns None if interrupted by signal."""
-    try:
-        result = subprocess.run(
-            ["ss", "-H", "-n", "-i", "dst", ip],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-    except FileNotFoundError:
-        raise click.ClickException("ss command not found; install iproute2")
-    except subprocess.TimeoutExpired:
-        if shutdown_ref[0]:
-            # Ctrl+C arrived while ss was hung — treat as clean shutdown so
-            # buffered text results are still printed before exit.
-            return None
-        raise click.ClickException(
-            f"ss did not respond within {timeout}s; "
-            "possible kernel/netlink hang or overloaded host"
-        )
-
-    # Ctrl+C during subprocess sets shutdown flag AND causes ss to exit non-zero.
-    # Check flag first so we don't emit a spurious error on clean shutdown.
+    ip: str, shutdown_ref: list[bool], timeout: float = POLL_TIMEOUT
+) -> list[SnapshotRecord] | None:
+    """Query kernel via inet_diag netlink. Returns list of (src, dst, metrics)
+    for all ESTABLISHED TCP sessions to dst ip, or None if interrupted."""
     if shutdown_ref[0]:
-        _dbg("snapshot skipped — shutdown signalled during ss run")
         return None
 
-    if result.returncode != 0:
-        msg = f"ss exited with code {result.returncode}"
-        if result.stderr.strip():
-            msg += f": {result.stderr.strip()}"
-        raise click.ClickException(msg)
+    family = AF_INET6 if ":" in ip else AF_INET
 
-    raw = result.stdout.splitlines()
-    _dbg(f"ss returned {len(raw)} lines")
+    result_box: list[tuple] = []
+    error_box: list[Exception] = []
 
-    kept: list[str] = []
-    for i, line in enumerate(raw):
-        session = _parse_session_line(line)
-        if session is None:
+    def _query() -> None:
+        try:
+            with DiagSocket() as ds:
+                ds.bind()
+                result_box.append(ds.get_sock_stats(
+                    family=family,
+                    states=SS_CONN,
+                    extensions=_INET_DIAG_INFO_EXT,
+                ))
+        except Exception as exc:  # noqa: BLE001
+            error_box.append(exc)
+
+    # daemon=True: if the kernel/netlink call hangs and we timeout, the thread
+    # is abandoned. As a daemon it won't prevent process exit and won't
+    # accumulate as a live non-daemon thread across repeated poll cycles.
+    worker = threading.Thread(target=_query, daemon=True)
+    worker.start()
+    worker.join(timeout=timeout)
+
+    if worker.is_alive():
+        # Thread still blocked in get_sock_stats — cannot be interrupted.
+        # Abandon it (daemon thread exits when the process does).
+        if shutdown_ref[0]:
+            return None
+        raise click.ClickException(
+            f"inet_diag query did not respond within {timeout}s; "
+            "possible kernel/netlink hang"
+        )
+
+    if error_box:
+        exc = error_box[0]
+        if isinstance(exc, OSError):
+            raise click.ClickException(f"inet_diag query failed: {exc}")
+        raise click.ClickException(f"inet_diag error: {exc}")
+
+    sockets = result_box[0] if result_box else ()
+
+    if shutdown_ref[0]:
+        _dbg("snapshot skipped — shutdown signalled during netlink query")
+        return None
+
+    _dbg(f"inet_diag returned {len(sockets)} socket(s)")
+
+    # Canonical form of the target IP — already validated by is_valid_ip() so
+    # ValueError cannot occur, but we keep the guard for defensive correctness.
+    try:
+        ip_canonical = ipaddress.ip_address(ip).compressed
+    except ValueError:  # pragma: no cover
+        ip_canonical = ip
+
+    results: list[SnapshotRecord] = []
+    for sock in sockets:
+        # Only ESTABLISHED (state=1); SS_CONN also includes SYN_SENT/SYN_RECV
+        if sock.get("idiag_state") != _TCP_ESTABLISHED:
             continue
-        _, dst = session
-        if not dst.startswith(ip + ":"):
-            continue
-        next_line = raw[i + 1] if i + 1 < len(raw) else ""
-        if _RE_HAS_METRIC.search(next_line):
-            kept.append(line)
-            kept.append(next_line)
 
-    _dbg(f"kept {len(kept)} lines after filter ({len(kept) // 2} pair(s))")
-    return kept
+        raw_dst: str = sock.get("idiag_dst", "")
+        try:
+            dst_canonical = ipaddress.ip_address(raw_dst).compressed
+        except ValueError:
+            dst_canonical = raw_dst
+        if dst_canonical != ip_canonical:
+            continue
+
+        raw_src: str = sock.get("idiag_src", "")
+        try:
+            src_canonical = ipaddress.ip_address(raw_src).compressed
+        except ValueError:
+            src_canonical = raw_src
+        sport: int = sock.get("idiag_sport", 0)
+        dport: int = sock.get("idiag_dport", 0)
+
+        src = _format_addr(src_canonical, sport)
+        dst = _format_addr(dst_canonical, dport)
+
+        # Use get_attr() — attrs is a list of (name, value) tuples, not a dict
+        tcp_info = dict(sock.get_attr("INET_DIAG_INFO") or {})
+        metrics = _extract_metrics(tcp_info)
+
+        _dbg(f"session {src} -> {dst}: {metrics}")
+        results.append((src, dst, metrics))
+
+    _dbg(f"collected {len(results)} session(s) to {ip}")
+    return results
 
 
 def _emit_record(
     ts: float,
     src: str,
     dst: str,
-    metrics: dict[str, int | float | str | None],
+    metrics: MetricDict,
     fmt: str,
     out: TextIO,
     csv_writer: csv.DictWriter | None,
@@ -228,59 +259,42 @@ def _emit_record(
         out.flush()
     else:
         label = f"{src} <--> {dst}"
-        fields = ", ".join(
-            f'"{k}":{json.dumps(v)}'
-            for k, v in metrics.items()
-        )
+        fields = ", ".join(f'"{k}":{json.dumps(v)}' for k, v in metrics.items())
         out.write(f"{ts:.3f} [{label}] {fields}\n")
         out.flush()  # text --stream must flush per-record for pipe/file consumers
 
 
 def _parse_snapshot(
-    lines: list[str],
+    records: list[SnapshotRecord],
     snapshot_time: float,
-    sessions: dict[str, list[tuple[float, dict[str, int | float | str | None]]]],
+    sessions: dict[str, list[tuple[float, MetricDict]]],
     fmt: str,
     stream: bool,
     out: TextIO,
     csv_writer: csv.DictWriter | None,
 ) -> None:
-    # lines from _collect_snapshot are guaranteed pairs: [session, metrics, session, metrics, ...]
-    found = 0
-    for i in range(0, len(lines) - 1, 2):
-        session = _parse_session_line(lines[i])
-        if session is None:
-            continue
-
-        metrics = _parse_metrics_line(lines[i + 1])
-        if metrics is None:
-            _dbg(f"no metrics line after session {session}")
-            continue
-
-        src, dst = session
-        found += 1
-
+    for src, dst, metrics in records:
         if stream or fmt in ("ndjson", "csv"):
             _emit_record(snapshot_time, src, dst, metrics, fmt, out, csv_writer)
         else:
             key = f"{src}{SESSION_SEP}{dst}"
             sessions[key].append((snapshot_time, metrics))
 
-    _dbg(f"snapshot parsed: {found} session(s) with metrics")
+    _dbg(f"snapshot processed: {len(records)} session(s)")
 
 
 def _print_sessions(
-    sessions: dict[str, list[tuple[float, dict[str, int | float | str | None]]]],
+    sessions: dict[str, list[tuple[float, MetricDict]]],
     out: TextIO,
 ) -> None:
-    for key, records in sessions.items():
-        if not records:
+    for key, recs in sessions.items():
+        if not recs:
             continue
         src, dst = key.split(SESSION_SEP, 1)
         label = f"{src} <--> {dst}"
         out.write("\n")
         out.write(f"======== START TCP SESSION ({label}) ========\n")
-        for ts, metrics in records:
+        for ts, metrics in recs:
             fields = ", ".join(f'"{k}":{json.dumps(v)}' for k, v in metrics.items())
             out.write(f"{ts:.3f} - {fields}\n")
         out.write(f"======== END TCP SESSION ({label}) ========\n")
@@ -289,8 +303,8 @@ def _print_sessions(
 
 
 @click.command()
-@click.version_option(version=_VERSION, prog_name="tcp-metric-collector")
-@click.option("-a", "ip", required=True, help="Destination IPv4 address to monitor")
+@click.version_option(version=_VERSION, prog_name="tcp-metric-collector")  # version read from package metadata
+@click.option("-a", "ip", required=True, help="Destination IP address to monitor (IPv4 or IPv6)")
 @click.option("--duration", type=click.FloatRange(min=0.001), default=None,
               help="Stop collecting N seconds after the first TCP session is seen (must be > 0)."
                    " The tool waits indefinitely until traffic appears.")
@@ -307,21 +321,21 @@ def _print_sessions(
               help="Log collection progress to stderr (sample count, session count).")
 @click.option("--debug", is_flag=True, default=False,
               help="Log detailed parse events to stderr (implies --verbose).")
-@click.option("--ss-timeout", type=click.FloatRange(min=0.1), default=SS_TIMEOUT,
+@click.option("--poll-timeout", type=click.FloatRange(min=0.1), default=POLL_TIMEOUT,
               show_default=True,
-              help="Max seconds to wait for ss before raising an error.")
+              help="Max seconds to wait for kernel netlink response per poll cycle.")
 def run(ip: str, duration: float | None, max_samples: int | None,
         output: str | None, stream: bool, fmt: str,
-        verbose: bool, debug: bool, ss_timeout: float) -> None:
-    """Collect TCP metrics for all sessions to a destination IPv4 address."""
+        verbose: bool, debug: bool, poll_timeout: float) -> None:
+    """Collect TCP metrics for all sessions to a destination IP address."""
     global _verbose, _debug  # reset each invocation — safe for tests calling run() multiple times
     _verbose = verbose or debug
     _debug = debug
 
-    if not is_valid_ipv4(ip):
-        raise click.BadParameter(f"'{ip}' is not a valid IPv4 address.", param_hint="'-a'")
+    if not is_valid_ip(ip):
+        raise click.BadParameter(f"'{ip}' is not a valid IP address.", param_hint="'-a'")
 
-    sessions: dict[str, list[tuple[float, dict[str, int | float | str | None]]]] = defaultdict(list)
+    sessions: dict[str, list[tuple[float, MetricDict]]] = defaultdict(list)
     # Use a mutable container so signal_handler and _collect_snapshot share state
     # without needing a nonlocal closure per call.
     shutdown_ref: list[bool] = [False]
@@ -354,7 +368,7 @@ def run(ip: str, duration: float | None, max_samples: int | None,
             file=sys.stderr,
         )
         _log(f"format={fmt} stream={stream} duration={duration} max_samples={max_samples}"
-             f" output={output!r} ss_timeout={ss_timeout}")
+             f" output={output!r} poll_timeout={poll_timeout}")
 
         next_tick = monotonic()
         while not shutdown_ref[0]:
@@ -367,26 +381,26 @@ def run(ip: str, duration: float | None, max_samples: int | None,
 
             next_tick += DEFAULT_SLEEP
 
-            snapshot_time = time()  # capture before ss runs — timestamp reflects sample start
-            lines = _collect_snapshot(ip, shutdown_ref, ss_timeout)
-            if lines is None:
+            snapshot_time = time()  # capture before query — timestamp reflects sample start
+            records = _collect_snapshot(ip, shutdown_ref, poll_timeout)
+            if records is None:
                 break
 
-            _parse_snapshot(lines, snapshot_time, sessions, fmt, stream, out, csv_writer)
+            _parse_snapshot(records, snapshot_time, sessions, fmt, stream, out, csv_writer)
             sample_count += 1
 
             # Start duration countdown on first sample that contains a session.
-            if duration is not None and duration_start_mono is None and lines:
+            if duration is not None and duration_start_mono is None and records:
                 duration_start_mono = monotonic()
                 _log("first session found — duration countdown started")
 
             if _verbose:
                 if fmt == "text" and not stream:
                     total_records = sum(len(v) for v in sessions.values())
-                    _log(f"sample {sample_count}: {len(lines)} lines, "
-                         f"{len(sessions)} session(s), {total_records} buffered records")
+                    _log(f"sample {sample_count}: {len(records)} session(s), "
+                         f"{total_records} buffered records")
                 else:
-                    _log(f"sample {sample_count}: {len(lines) // 2} session(s) emitted")
+                    _log(f"sample {sample_count}: {len(records)} session(s) emitted")
 
             if max_samples is not None and sample_count >= max_samples:
                 _log(f"--max-samples {max_samples} reached, stopping")

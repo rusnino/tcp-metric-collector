@@ -15,29 +15,29 @@ uvx --from . tcp-metric-collector -a <destination_ip>
 python3 tcp_metrics_collector.py -a <destination_ip>
 ```
 
-Requires Linux with `ss` command available (iproute2) and Python 3.10+. Must run on sender side.
+Requires Linux with `inet_diag` netlink support (kernel ≥2.6.14, standard) and Python 3.10+. Needs `CAP_NET_ADMIN` or root. Must run on sender side.
 
-Project uses `uv` for environment management (`pyproject.toml`). One external dependency: `click>=8.1.8`.
+Project uses `uv` for environment management (`pyproject.toml`). External dependencies: `click>=8.1.8`, `pyroute2>=0.7`.
 
 ## Architecture
 
 Single-file script (`tcp_metrics_collector.py`). Key functions:
 
-- `_collect_snapshot(ip, shutdown_ref, timeout)` → `list[str] | None` — runs `ss -H -n -i dst <ip>`, uses `_parse_session_line()` + `dst.startswith(ip+":")` + `_RE_HAS_METRIC` to build guaranteed (session, metrics) pairs; returns `None` on shutdown
-- `_parse_session_line(line)` → `(src, dst) | None`
-- `_parse_metrics_line(line)` → `dict[str, int | float | str | None] | None`
-- `_parse_snapshot(lines, ts, sessions, fmt, stream, out, csv_writer)` — steps lines in pairs (guaranteed by `_collect_snapshot`); emits immediately for ndjson/csv or `--stream`, otherwise appends to `sessions`
+- `_collect_snapshot(ip, shutdown_ref, timeout)` → `list[(src, dst, metrics)] | None` — queries kernel via `DiagSocket.get_sock_stats` (inet_diag netlink), filters ESTABLISHED sessions to dst ip, maps tcp_info → metric dict; returns `None` on shutdown
+- `_extract_metrics(tcp_info)` → `MetricDict` — maps tcp_info fields to output schema
+- `_format_rate(bps)` → `str` — formats bytes/s as "X.XXMbps" etc.
+- `_parse_snapshot(records, ts, sessions, fmt, stream, out, csv_writer)` — iterates `(src, dst, metrics)` tuples; emits immediately for ndjson/csv or `--stream`, otherwise appends to `sessions`
 - `_emit_record(ts, src, dst, metrics, fmt, out, csv_writer)` — formats and writes one record in requested format
 - `_print_sessions(sessions, out)` — formats buffered text output on exit (text format only)
 - `run()` — click entrypoint; monotonic tick scheduler, `shutdown_ref` flag, `--duration` + `--max-samples` termination
 
 Collection and parsing merged: each snapshot parsed immediately in the loop. `sessions` stores `(timestamp, dict)` tuples — not pre-serialised strings. Raw `ss` output never retained beyond current cycle.
 
-CLI options: `-a IP`, `--duration N` (N seconds after first session seen, tool waits for traffic), `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`, `--verbose`, `--debug`, `--ss-timeout N`, `--version`
+CLI options: `-a IP` (IPv4 or IPv6), `--duration N` (after first session seen), `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`, `--verbose`, `--debug`, `--poll-timeout N`, `--version`
 
 Key constants:
 - `DEFAULT_SLEEP = 0.1` — poll interval (seconds); monotonic tick scheduler keeps this exact
-- `SS_TIMEOUT = 5.0` — default max seconds to wait for ss; overridable via `--ss-timeout`
+- `POLL_TIMEOUT = 5.0` — default max seconds for kernel netlink response; overridable via `--poll-timeout`
 - `SESSION_SEP = "|"` — session key separator (safe: cannot appear in IPv4:port)
 
 `snapshot_time = time()` captured before `_collect_snapshot()` — timestamp is sample start, not ss completion.
@@ -53,10 +53,8 @@ uv run pytest tests/test_cli.py   # CLI integration tests only
 
 Two test files:
 
-- `tests/test_parser.py` — unit tests for `is_valid_ipv4`, `_parse_session_line`, `_parse_metrics_line`, `_parse_snapshot`. No real `ss` invocation. Fixtures in `tests/fixtures/` simulate `ss -i` output.
-- `tests/test_cli.py` — CLI integration tests via `click.testing.CliRunner`. `_collect_snapshot` mocked with `unittest.mock.patch`. Covers input validation (exit codes), text/ndjson/csv output correctness, `--output` file errors, `ss` failure modes.
-
-Fixtures in `tests/fixtures/`: `ss_estab_single.txt`, `ss_multiple_sessions.txt`, `ss_closing.txt`, `ss_ipv6.txt`, `ss_no_wscale.txt`, `ss_no_metrics.txt`, `ss_send_only.txt`.
+- `tests/test_parser.py` — unit tests for `is_valid_ip`, `_format_rate`, `_extract_metrics`, `_collect_snapshot`, `_parse_snapshot`. No real netlink calls — `DiagSocket` mocked via `unittest.mock.MagicMock`. `_make_sock()` helper builds mock socket dicts.
+- `tests/test_cli.py` — CLI integration tests via `click.testing.CliRunner`. `_collect_snapshot` mocked to return `list[(src, dst, metrics)]`. Covers input validation, IPv6 acceptance, text/ndjson/csv output, `--output` file errors, inet_diag failure.
 
 ## Commit Policy
 

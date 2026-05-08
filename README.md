@@ -1,12 +1,13 @@
 # TCP Metric Collector
 
-Collects TCP metrics per destination IPv4 address on Linux. Samples `ss` socket statistics at 100ms intervals; parses each snapshot immediately in the collection loop.
+Collects TCP metrics per destination IP address (IPv4 and IPv6) on Linux via **kernel `inet_diag` netlink** — the same source used by `ss` internally, but without subprocess overhead or text parsing fragility. Queries every 100ms and emits structured metrics immediately.
 
 ## Requirements
 
-- Linux with `iproute2` (`ss` command)
+- Linux kernel with `inet_diag` support (standard since kernel 2.6.14)
 - Python 3.10+
-- `click>=8.1.8` (managed automatically by uv)
+- `click>=8.1.8` and `pyroute2>=0.7` (managed automatically by uv)
+- **`CAP_NET_ADMIN` capability or root** for netlink socket access
 - [uv](https://docs.astral.sh/uv/) (recommended) or plain Python 3
 - Run on **sender side**
 
@@ -36,7 +37,7 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 
 | Option | Description |
 |--------|-------------|
-| `-a IP` | Destination IPv4 address to monitor (required) |
+| `-a IP` | Destination IP address to monitor — IPv4 or IPv6 (required) |
 | `--duration N` | Stop N seconds after the **first TCP session** is seen (N > 0). Waits indefinitely until traffic appears. |
 | `--max-samples N` | Stop after N snapshots (N ≥ 1) |
 | `--output FILE` | Write results to file instead of stdout |
@@ -44,7 +45,7 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 | `--format text\|ndjson\|csv` | Output format (default: `text`) |
 | `-v, --verbose` | Log sample count and session count to stderr each cycle |
 | `--debug` | Log detailed parse events to stderr (implies `--verbose`) |
-| `--ss-timeout N` | Max seconds to wait for ss per sample (default: `5.0`, min: `0.1`) |
+| `--poll-timeout N` | Max seconds to wait for kernel netlink response (default: `5.0`, min: `0.1`) |
 | `--version` | Print version and exit (reads `pyproject.toml` in bare-script mode) |
 
 ## Examples
@@ -76,8 +77,8 @@ uv run tcp_metrics_collector.py -a 192.168.1.100 --debug
 # Long-running collection — use ndjson/csv to avoid memory growth
 uv run tcp_metrics_collector.py -a 192.168.1.100 --format ndjson | tee metrics.ndjson
 
-# Increase ss timeout on slow/loaded hosts (default 5.0s)
-uv run tcp_metrics_collector.py -a 192.168.1.100 --ss-timeout 15
+# Increase netlink poll timeout on slow/loaded hosts (default 5.0s)
+uv run tcp_metrics_collector.py -a 192.168.1.100 --poll-timeout 15
 ```
 
 ## Output Formats
@@ -110,6 +111,8 @@ ts,src,dst,cwnd,mss,ssthresh,unacked,rtt_ms,rttvar_ms,retrans_cur,retrans_total,
 
 Absent fields in CSV are **empty cells** (standard RFC 4180 behavior via Python `csv.DictWriter`), not the string `"null"`. A consumer expecting `null` should treat empty cell as absent.
 
+IPv6 `src`/`dst` fields use RFC 2732 bracket notation (`[2001:db8::1]:80`) so port is always unambiguously the last component after the final `:`.
+
 Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 
 ## Collected Metrics
@@ -121,27 +124,29 @@ Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 | `ssthresh` | `int` | `null` | empty cell | Slow-start threshold |
 | `unacked` | `int` | `null` | empty cell | Unacknowledged segments |
 | `rtt_ms` | `float` | `null` | empty cell | Round-trip time (ms) |
-| `rttvar_ms` | `float` | `null` | empty cell | RTT variance (ms) — second component of `rtt:X/Y` from ss |
+| `rttvar_ms` | `float` | `null` | empty cell | RTT variance (ms) — from `tcpi_rttvar` (kernel µs ÷ 1000) |
 | `retrans_cur` | `int` | `null` | empty cell | Current retransmissions |
 | `retrans_total` | `int` | `null` | empty cell | Total retransmissions |
 | `send` | `string` | `null` | empty cell | Estimated send rate (e.g. `"84.7Mbps"`) |
 
-Absent = field not present in `ss` output for that sample. Distinct from `0` (present but zero).
+Absent = field not present / zero in `tcp_info` for that sample. Distinct from `0` (present but zero).
 
 ## Diagnostics
 
-**No output after Ctrl+C?** Use `--debug` to see which lines ss returns and why sessions are skipped:
+**No output after Ctrl+C?** Use `--debug` to see what the netlink query returns and which sockets are filtered:
 
 ```bash
 uv run tcp_metrics_collector.py -a 192.168.1.100 --debug
 ```
 
-Common causes: no active TCP connections to target IP; target unreachable; ss output format differs from expected (check `ss -H -n -i dst 192.168.1.100` manually).
+Common causes: no active TCP ESTABLISHED connections to target IP; insufficient privileges (needs `CAP_NET_ADMIN` or root); target IP not reachable. Verify directly: `ss -H -n -i dst 192.168.1.100`.
 
-**Sampling interval accuracy:** Uses monotonic tick scheduler — actual interval is 100ms minus ss execution time. If ss takes longer than 100ms, next sample fires immediately. Use `--verbose` to observe sample cadence.
+**Sampling interval accuracy:** Uses monotonic tick scheduler — actual interval is 100ms minus netlink query time. Kernel inet_diag calls are local and typically complete in <1ms, so jitter is minimal. Use `--verbose` to observe sample cadence.
+
+**Netlink query hung?** If the kernel blocks the `inet_diag` query (very rare), the tool will raise an error after `--poll-timeout` seconds (default 5.0). The blocked thread is abandoned as a daemon and terminates when the process exits.
 
 ## Known Limitations
 
-- **IPv4 only** — `is_valid_ipv4()` rejects IPv6 at input; `RE_TCP_SESSION_LOOKUP` only matches dotted-decimal addresses
-- `CLOSING` state sessions skipped
+- **`CAP_NET_ADMIN` required** — netlink inet_diag queries require elevated privileges; run with `sudo` or grant the capability
+- Only `ESTABLISHED` (state=1) TCP sessions collected; SYN_SENT/SYN_RECV/CLOSING excluded
 - **Memory growth in default text mode** — without `--stream`, every parsed record is buffered in memory until exit so session blocks can be printed. Memory grows as `sessions × samples`. For runs longer than a few minutes or with many concurrent TCP sessions, use `--format ndjson`, `--format csv`, or `--stream` instead — these emit and discard each record immediately (O(1) memory per cycle).
