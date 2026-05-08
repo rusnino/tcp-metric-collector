@@ -51,6 +51,7 @@ CSV_FIELDS = (
 )
 
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+:\S+)\s+(\d+\.\d+\.\d+\.\d+:\S+)$"
+_RE_TCP_PREFIX = re.compile(r"\btcp\s")  # fast pre-check before full session regex
 RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans):(\S+)"
 # Compiled fast-check: is a line a ss metrics line at all?
 # Matches standard key:value tokens OR "send VALUE" (space-separated in ss output).
@@ -81,7 +82,7 @@ def is_valid_ipv4(ip: str) -> bool:
 
 
 def _parse_session_line(line: str) -> tuple[str, str] | None:
-    if "tcp " not in line or "CLOSING" in line:
+    if not _RE_TCP_PREFIX.search(line) or "CLOSING" in line:
         _dbg(f"session line not TCP/CLOSING: {line.strip()!r}")
         return None
     m = re.search(RE_TCP_SESSION_LOOKUP, line.strip())
