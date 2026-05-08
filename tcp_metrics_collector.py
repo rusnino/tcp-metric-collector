@@ -114,7 +114,9 @@ def _extract_metrics(tcp_info: dict) -> MetricDict:
 
     send: str | None = None
     if cwnd and mss and rtt_us:
-        send = _format_rate(cwnd * mss * 1_000_000 / rtt_us)
+        # bps = bits_in_flight / rtt_seconds = cwnd*mss*8 / (rtt_us/1e6)
+        # = cwnd * mss * 8 * 1e6 / rtt_us  (matches ss iproute2 formula)
+        send = _format_rate(cwnd * mss * 8 * 1_000_000 / rtt_us)
 
     return {
         "cwnd":          cwnd,

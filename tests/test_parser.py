@@ -104,12 +104,15 @@ class TestExtractMetrics:
         assert m["retrans_total"] == 12
 
     def test_send_derived_from_cwnd_mss_rtt(self):
-        # cwnd=10, mss=1460, rtt=1000µs → 10*1460*1e6/1000 = 14.6e6 bps = 14.6Mbps
+        # cwnd=10, mss=1460, rtt=1000µs → 10*1460*8*1e6/1000 = 116.8e6 bps ≈ 117Mbps
         m = _extract_metrics(self._full_tcp_info(
             tcpi_snd_cwnd=10, tcpi_snd_mss=1460, tcpi_rtt=1000
         ))
         assert m["send"] is not None
         assert "Mbps" in m["send"]
+        # Verify order of magnitude — should be ~117Mbps not ~14Mbps
+        rate_mbps = float(m["send"].replace("Mbps", ""))
+        assert rate_mbps > 100
 
     def test_send_none_when_rtt_zero(self):
         m = _extract_metrics(self._full_tcp_info(tcpi_rtt=0))
