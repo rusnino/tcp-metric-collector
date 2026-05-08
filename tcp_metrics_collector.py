@@ -162,6 +162,10 @@ def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
     except FileNotFoundError:
         raise click.ClickException("ss command not found; install iproute2")
     except subprocess.TimeoutExpired:
+        if shutdown_ref[0]:
+            # Ctrl+C arrived while ss was hung — treat as clean shutdown so
+            # buffered text results are still printed before exit.
+            return None
         raise click.ClickException(
             f"ss did not respond within {SS_TIMEOUT}s; "
             "possible kernel/netlink hang or overloaded host"

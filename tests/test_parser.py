@@ -329,3 +329,11 @@ class TestCollectSnapshot:
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ss", timeout=5.0)):
             with pytest.raises(click.ClickException, match="5.0"):
                 _collect_snapshot("192.168.1.100", [False])
+
+    def test_timeout_with_shutdown_returns_none(self):
+        # Ctrl+C while ss is hung: TimeoutExpired fires but shutdown is already set.
+        # Must return None (clean exit) so buffered text results are printed.
+        shutdown = [True]
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ss", timeout=5.0)):
+            result = _collect_snapshot("192.168.1.100", shutdown)
+        assert result is None
