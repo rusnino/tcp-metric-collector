@@ -265,3 +265,9 @@ class TestSsFailure:
         with patch("subprocess.run", return_value=mock_result):
             result = runner.invoke(run, ["-a", "192.168.1.100"], catch_exceptions=False)
         assert "permission denied" in result.output
+
+    def test_ss_not_found_exits_1_with_message(self, runner):
+        with patch("subprocess.run", side_effect=FileNotFoundError("ss")):
+            result = runner.invoke(run, ["-a", "192.168.1.100"], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "iproute2" in result.output

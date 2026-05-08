@@ -130,11 +130,14 @@ def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None
 
 def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
     """Run ss and return filtered lines. Returns None if interrupted by signal."""
-    result = subprocess.run(
-        ["ss", "-H", "-n", "-i", "dst", ip],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["ss", "-H", "-n", "-i", "dst", ip],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        raise click.ClickException("ss command not found; install iproute2")
 
     # Ctrl+C during subprocess sets shutdown flag AND causes ss to exit non-zero.
     # Check flag first so we don't emit a spurious error on clean shutdown.
@@ -312,9 +315,10 @@ def run(ip: str, duration: float | None, max_samples: int | None,
             _parse_snapshot(lines, time(), sessions, fmt, stream, out, csv_writer)
             sample_count += 1
 
-            total_records = sum(len(v) for v in sessions.values())
-            _log(f"sample {sample_count}: {len(lines)} lines, "
-                 f"{len(sessions)} session(s), {total_records} total records")
+            if _verbose:
+                total_records = sum(len(v) for v in sessions.values())
+                _log(f"sample {sample_count}: {len(lines)} lines, "
+                     f"{len(sessions)} session(s), {total_records} total records")
 
             if max_samples is not None and sample_count >= max_samples:
                 _log(f"--max-samples {max_samples} reached, stopping")
