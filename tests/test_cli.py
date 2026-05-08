@@ -323,3 +323,9 @@ class TestSsFailure:
             result = runner.invoke(run, ["-a", "192.168.1.100"], catch_exceptions=False)
         assert result.exit_code == 1
         assert "iproute2" in result.output
+
+    def test_ss_timeout_exits_1_with_message(self, runner):
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="ss", timeout=5.0)):
+            result = runner.invoke(run, ["-a", "192.168.1.100"], catch_exceptions=False)
+        assert result.exit_code == 1
+        assert "5.0" in result.output

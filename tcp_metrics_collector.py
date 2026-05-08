@@ -37,6 +37,7 @@ except PackageNotFoundError:
         _VERSION = "unknown"
 
 DEFAULT_SLEEP: float = 0.1
+SS_TIMEOUT: float = 5.0   # max seconds to wait for ss before raising an error
 SESSION_SEP = "|"
 
 # Typed metric fields in output. rtt split into rtt_ms/rttvar_ms; retrans split
@@ -154,9 +155,15 @@ def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
             ["ss", "-H", "-n", "-i", "dst", ip],
             capture_output=True,
             text=True,
+            timeout=SS_TIMEOUT,
         )
     except FileNotFoundError:
         raise click.ClickException("ss command not found; install iproute2")
+    except subprocess.TimeoutExpired:
+        raise click.ClickException(
+            f"ss did not respond within {SS_TIMEOUT}s; "
+            "possible kernel/netlink hang or overloaded host"
+        )
 
     # Ctrl+C during subprocess sets shutdown flag AND causes ss to exit non-zero.
     # Check flag first so we don't emit a spurious error on clean shutdown.
