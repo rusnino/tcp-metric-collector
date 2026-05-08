@@ -64,8 +64,18 @@ CSV_FIELDS = (
     "send",
 )
 
-_verbose = False
-_debug = False
+# Per-thread logging flags. threading.local() prevents cross-invocation
+# interference in tests and is safe if ever embedded as a library.
+_tls = threading.local()
+
+
+def _is_verbose() -> bool:
+    return getattr(_tls, "verbose", False)
+
+
+def _is_debug() -> bool:
+    return getattr(_tls, "debug", False)
+
 
 # Metric record type alias
 MetricDict = dict[str, int | float | str | None]
@@ -80,12 +90,12 @@ def _format_addr(ip: str, port: int) -> str:
 
 
 def _log(msg: str) -> None:
-    if _verbose:
+    if _is_verbose():
         click.echo(f"[INFO] {msg}", file=sys.stderr)
 
 
 def _dbg(msg: str) -> None:
-    if _debug:
+    if _is_debug():
         click.echo(f"[DEBUG] {msg}", file=sys.stderr)
 
 
@@ -336,9 +346,9 @@ def run(ip: str, duration: float | None, max_samples: int | None,
         output: str | None, stream: bool, fmt: str,
         verbose: bool, debug: bool, poll_timeout: float) -> None:
     """Collect TCP metrics for all sessions to a destination IP address."""
-    global _verbose, _debug  # reset each invocation — safe for tests calling run() multiple times
-    _verbose = verbose or debug
-    _debug = debug
+    # Store flags in thread-local storage — safe for concurrent test invocations.
+    _tls.verbose = verbose or debug
+    _tls.debug = debug
 
     if not is_valid_ip(ip):
         raise click.BadParameter(f"'{ip}' is not a valid IP address.", param_hint="'-a'")
@@ -402,7 +412,7 @@ def run(ip: str, duration: float | None, max_samples: int | None,
                 duration_start_mono = monotonic()
                 _log("first session found — duration countdown started")
 
-            if _verbose:
+            if _is_verbose():
                 if fmt == "text" and not stream:
                     total_records = sum(len(v) for v in sessions.values())
                     _log(f"sample {sample_count}: {len(records)} session(s), "
