@@ -4,6 +4,7 @@ import io
 from collections import defaultdict
 from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 
 from tcp_metrics_collector import (
@@ -255,7 +256,6 @@ class TestCollectSnapshot:
 
     def test_timeout_raises_click_exception(self):
         import time
-        import click as _click
         import threading
 
         mock_ds = MagicMock()
@@ -270,7 +270,7 @@ class TestCollectSnapshot:
         non_daemon_before = sum(1 for t in threading.enumerate() if not t.daemon)
 
         with patch("tcp_metrics_collector.DiagSocket", return_value=mock_ds):
-            with pytest.raises(_click.ClickException, match="0.05"):
+            with pytest.raises(click.ClickException, match="0.05"):
                 _collect_snapshot("192.168.1.100", [False], timeout=0.05)
 
         # Worker thread must be daemon — no new non-daemon threads should remain
@@ -303,8 +303,6 @@ class TestCollectSnapshot:
         assert non_daemon_after == non_daemon_before
 
     def test_oserror_raises_click_exception(self):
-        import click
-
         mock_ds = MagicMock()
         mock_ds.__enter__ = MagicMock(return_value=mock_ds)
         mock_ds.__exit__ = MagicMock(return_value=False)

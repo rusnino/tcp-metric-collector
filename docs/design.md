@@ -137,28 +137,20 @@ Key fields and conversions:
 
 Both `SIGINT` (Ctrl+C) and `SIGTERM` (`kill`) set a `shutdown` flag. The loop exits cleanly after the current iteration, then calls `_print_sessions()` (or skips it in `--stream` mode where output was already emitted).
 
-### 7. `--format text|ndjson|csv` — proper structured output
+### 7. `--format text|ndjson|csv` and typed metric schema
 
-Previous output did `metric[1:-1]` — stripped `{` and `}` from `json.dumps()`. Looked like JSON fields but was not valid JSON. Could not be piped to `jq`, parsed by CSV readers, or consumed by any standard tooling.
+`--format ndjson` emits one valid JSON object per line (`{"ts":..., "src":..., "dst":..., <metrics>}`). `--format csv` emits RFC 4180 CSV with a header row. Both always stream per-record. `--format text` (default) buffers and prints session blocks on exit.
 
-`_parse_session_line()` now returns `(src, dst)` tuple. `_parse_metrics_line()` returns a typed `dict` — not pre-serialised strings.
+All fields are typed directly from `tcp_info` kernel struct. No string-to-int coercion needed:
 
-`--format ndjson` emits one valid JSON object per line. `--format csv` emits RFC 4180 CSV with a header row. Both always stream per-record. `--format text` (default) preserves human-readable session block output.
+| Field | Type | Source |
+|-------|------|--------|
+| `cwnd`, `mss`, `ssthresh`, `unacked` | `int \| None` | Direct from tcp_info (None if field is 0/absent) |
+| `rtt_ms`, `rttvar_ms` | `float \| None` | `tcpi_rtt` / `tcpi_rttvar` ÷ 1000 (µs → ms) |
+| `retrans_cur`, `retrans_total` | `int \| None` | `tcpi_retransmits` / `tcpi_total_retrans` |
+| `send` | `str \| None` | Derived rate string — `None` if rtt=0 |
 
-### 7a. Typed metric schema — no int/str ambiguity
-
-Previous `_parse_metrics_line()` initialised all fields as `int 0` then overwrote found values with `str` from regex. Same field could be `"10"` (str) when present or `0` (int) when absent — type was unpredictable.
-
-Current schema:
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `cwnd`, `mss`, `ssthresh`, `unacked` | `int \| None` | Direct integer parse |
-| `rtt_ms`, `rttvar_ms` | `float \| None` | Split from `rtt:X/Y` |
-| `retrans_cur`, `retrans_total` | `int \| None` | Split from `retrans:X/Y` |
-| `send` | `str \| None` | Kept as string; unit varies (Mbps/Kbps/Gbps) |
-
-`None` means the field was zero or absent in `tcp_info` — distinguishable from `0` (present but zero). `json.dumps()` serialises `None` as JSON `null` natively.
+`None` serialises as JSON `null` natively. CSV absent fields are empty cells (see Known Limitations).
 
 ### 8. `click` instead of `argparse`
 

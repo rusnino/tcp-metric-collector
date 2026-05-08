@@ -43,8 +43,9 @@ DEFAULT_SLEEP: float = 0.1
 POLL_TIMEOUT: float = 5.0   # netlink socket timeout per query
 SESSION_SEP = "|"
 
-# inet_diag extension bitmask: request INET_DIAG_INFO (tcp_info struct)
-_INET_DIAG_INFO_EXT: int = 1 << 1  # INET_DIAG_INFO = 1
+# inet_diag extension bitmask: request INET_DIAG_INFO (tcp_info struct).
+# The INET_DIAG_INFO extension has index 1; the bitmask is 1<<1 = 2.
+_INET_DIAG_INFO_EXT: int = 1 << 1
 
 # TCP state value for ESTABLISHED (from linux/tcp.h TCP_ESTABLISHED = 1)
 _TCP_ESTABLISHED: int = 1
@@ -94,7 +95,7 @@ def is_valid_ip(ip: str) -> bool:
 
 
 def _format_rate(bps: float) -> str:
-    """Format bits-per-second as human-readable rate string matching ss output style."""
+    """Format bits-per-second as human-readable rate string (e.g. '84.7Mbps')."""
     if bps >= 1e9:
         return f"{bps / 1e9:.3g}Gbps"
     if bps >= 1e6:
@@ -149,7 +150,7 @@ def _collect_snapshot(
 
     family = AF_INET6 if ":" in ip else AF_INET
 
-    result_box: list = []
+    result_box: list[tuple] = []
     error_box: list[Exception] = []
 
     def _query() -> None:
@@ -195,11 +196,11 @@ def _collect_snapshot(
 
     _dbg(f"inet_diag returned {len(sockets)} socket(s)")
 
-    # Canonical form of the target IP for comparison — normalises IPv6 forms
-    # (e.g. "2001:0db8:0:0:0:0:0:1" == "2001:db8::1" after compression).
+    # Canonical form of the target IP — already validated by is_valid_ip() so
+    # ValueError cannot occur, but we keep the guard for defensive correctness.
     try:
         ip_canonical = ipaddress.ip_address(ip).compressed
-    except ValueError:
+    except ValueError:  # pragma: no cover
         ip_canonical = ip
 
     results: list[SnapshotRecord] = []
