@@ -100,13 +100,17 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "tomli" },
 ]
 
 [package.metadata]
 requires-dist = [{ name = "click", specifier = ">=8.1.8" }]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=9.0.3" }]
+dev = [
+    { name = "pytest", specifier = ">=9.0.3" },
+    { name = "tomli", specifier = ">=2.4.1" },
+]
 
 [[package]]
 name = "tomli"
