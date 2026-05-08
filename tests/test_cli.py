@@ -229,6 +229,16 @@ class TestOutputFile:
         content = out_file.read_text()
         assert "START TCP SESSION" in content
 
+    def test_output_bad_path_exits_1(self, runner):
+        result = runner.invoke(run, ["-a", "192.168.1.100", "--output", "/nonexistent/dir/out.txt"])
+        assert result.exit_code == 1
+        assert "Cannot open output file" in result.output
+
+    def test_output_directory_as_file_exits_1(self, runner, tmp_path):
+        result = runner.invoke(run, ["-a", "192.168.1.100", "--output", str(tmp_path)])
+        assert result.exit_code == 1
+        assert "Cannot open output file" in result.output
+
     def test_ndjson_to_file_is_valid(self, runner, tmp_path):
         out_file = tmp_path / "metrics.ndjson"
         with patch("tcp_metrics_collector._collect_snapshot", side_effect=_mock_one_shot(_SINGLE_SESSION_LINES)):

@@ -287,7 +287,10 @@ def run(ip: str, duration: float | None, max_samples: int | None,
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    out: TextIO = open(output, "w") if output else sys.stdout  # noqa: SIM115
+    try:
+        out: TextIO = open(output, "w") if output else sys.stdout  # noqa: SIM115
+    except OSError as exc:
+        raise click.ClickException(f"Cannot open output file '{output}': {exc.strerror}")
 
     csv_writer: csv.DictWriter | None = None
     if fmt == "csv":
