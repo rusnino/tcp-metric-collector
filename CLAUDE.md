@@ -33,7 +33,7 @@ Single-file script (`tcp_metrics_collector.py`). Key functions:
 
 Collection and parsing merged: each snapshot parsed immediately in the loop. `sessions` stores `(timestamp, dict)` tuples — not pre-serialised strings. Raw `ss` output never retained beyond current cycle.
 
-CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`, `--verbose`, `--debug`, `--ss-timeout N`, `--version`
+CLI options: `-a IP`, `--duration N` (N seconds after first session seen, tool waits for traffic), `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`, `--verbose`, `--debug`, `--ss-timeout N`, `--version`
 
 Key constants:
 - `DEFAULT_SLEEP = 0.1` — poll interval (seconds); monotonic tick scheduler keeps this exact

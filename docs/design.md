@@ -210,8 +210,11 @@ On `TimeoutExpired`: if `shutdown_ref` is set (Ctrl+C while ss hung), returns `N
 
 | Pattern | Purpose |
 |---------|---------|
-| `RE_TCP_SESSION_LOOKUP` | Extracts `(src_ip:port, dst_ip:port)` from `ss` session line |
-| `RE_TCP_METRIC_PARAM_LOOKUP` | Extracts known metric `key:value` pairs (allowlist of 7 keys) |
+| `RE_TCP_SESSION_LOOKUP` | Raw pattern string for session line — compiled as `_RE_TCP_SESSION` |
+| `_RE_TCP_SESSION` | Compiled `RE_TCP_SESSION_LOOKUP`; extracts `(src_ip:port, dst_ip:port)` |
+| `_RE_TCP_PREFIX` | `\btcp\s` — fast pre-check in `_parse_session_line()` before full regex |
+| `RE_TCP_METRIC_PARAM_LOOKUP` | Raw pattern for metric `key:value` — used to build `_RE_HAS_METRIC` and in `_parse_metrics_line()` |
+| `_RE_HAS_METRIC` | Compiled pre-filter in `_collect_snapshot()`: `RE_TCP_METRIC_PARAM_LOOKUP \| \bsend\s+\S` |
 
 ## Known Limitations
 

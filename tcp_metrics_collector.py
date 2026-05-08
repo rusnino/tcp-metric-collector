@@ -51,7 +51,8 @@ CSV_FIELDS = (
 )
 
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+:\S+)\s+(\d+\.\d+\.\d+\.\d+:\S+)$"
-_RE_TCP_PREFIX = re.compile(r"\btcp\s")  # fast pre-check before full session regex
+_RE_TCP_SESSION = re.compile(RE_TCP_SESSION_LOOKUP)  # compiled form for repeated calls
+_RE_TCP_PREFIX = re.compile(r"\btcp\s")              # fast pre-check before full session regex
 RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans):(\S+)"
 # Compiled fast-check: is a line a ss metrics line at all?
 # Matches standard key:value tokens OR "send VALUE" (space-separated in ss output).
@@ -85,7 +86,7 @@ def _parse_session_line(line: str) -> tuple[str, str] | None:
     if not _RE_TCP_PREFIX.search(line) or "CLOSING" in line:
         _dbg(f"session line not TCP/CLOSING: {line.strip()!r}")
         return None
-    m = re.search(RE_TCP_SESSION_LOOKUP, line.strip())
+    m = _RE_TCP_SESSION.search(line.strip())
     if not m:
         _dbg(f"session regex no match: {line.strip()!r}")
         return None
@@ -385,7 +386,7 @@ def run(ip: str, duration: float | None, max_samples: int | None,
                     _log(f"sample {sample_count}: {len(lines)} lines, "
                          f"{len(sessions)} session(s), {total_records} buffered records")
                 else:
-                    _log(f"sample {sample_count}: {len(lines)} lines emitted")
+                    _log(f"sample {sample_count}: {len(lines) // 2} session(s) emitted")
 
             if max_samples is not None and sample_count >= max_samples:
                 _log(f"--max-samples {max_samples} reached, stopping")
