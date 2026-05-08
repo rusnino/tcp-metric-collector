@@ -163,7 +163,17 @@ Each session line is paired atomically with `lines[i+1]`. `_parse_session_line()
 
 Previously `_parse_metrics_line()` returned `None` if `"wscale"` was not in the line, and `_collect_snapshot()` filtered adjacency by `"wscale" in line`. This created a hard dependency on `wscale` appearing in ss output — a configuration detail that can vary (e.g. `ss` output without window scaling negotiated, or future ss versions).
 
-The contract is now: a line is a metrics line if and only if it contains at least one allowlisted metric token (`cwnd`, `rtt`, `mss`, `ssthresh`, `send`, `unacked`, `retrans`). Both `_parse_metrics_line()` and `_collect_snapshot()` use `_RE_HAS_METRIC` (compiled from `RE_TCP_METRIC_PARAM_LOOKUP`) for this check. `wscale` token is no longer special-cased anywhere.
+The contract is: a line is a metrics line if it matches `_RE_HAS_METRIC`:
+
+```python
+_RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP + r"|\bsend \S")
+```
+
+Two forms are accepted:
+- **`key:value`** — any of the 7 allowlisted tokens (`cwnd`, `rtt`, `mss`, `ssthresh`, `send`, `unacked`, `retrans`) in colon-separated form.
+- **`send VALUE`** — send rate in space-separated form (e.g. `send 84.7Mbps`), which `ss` emits without a colon. `_parse_metrics_line()` normalises this to `send:VALUE` before regex matching; `_RE_HAS_METRIC` must detect it in pre-normalised form to avoid filtering it out in `_collect_snapshot()`.
+
+Both `_parse_metrics_line()` and `_collect_snapshot()` use `_RE_HAS_METRIC` so the detection contract is enforced at a single compiled object. `wscale` is no longer special-cased anywhere.
 
 ### 14. No `sys.exit()` in `run()` — idiomatic Click
 
