@@ -49,13 +49,13 @@ _collect_snapshot(ip, shutdown_ref)
   → return list[str]  or  None on shutdown
 
 _parse_snapshot(lines, snapshot_time, sessions, fmt, stream, out, csv_writer)
-  → for i, line in enumerate(lines):
-      session_key = _parse_session_line(line)       # None → skip
-      metrics     = _parse_metrics_line(lines[i+1]) # None → skip
+  → for i in range(0, len(lines) - 1, 2):   # step by 2 — guaranteed pairs
+      session = _parse_session_line(lines[i])     # (src, dst) or None → skip pair
+      metrics = _parse_metrics_line(lines[i + 1]) # dict or None → skip pair
       if stream or fmt in (ndjson, csv):
           emit immediately → discard (O(1) memory)
       else:
-          sessions[session_key].append((ts, metrics))  # text mode only
+          sessions[key].append((ts, metrics))      # text mode only
 ```
 
 Metrics are parsed and stored into `sessions` on every poll cycle. Raw `ss` output is never retained — only `(timestamp, dict)` tuples per session. Memory grows proportionally to **unique sessions × samples per session**, not to total raw output volume.
