@@ -203,3 +203,4 @@ The two components are kept semantically consistent: `_RE_HAS_METRIC` detects bo
 - **IPv4 only**: enforced at input by `is_valid_ipv4()`.
 - **In-memory accumulation (text mode only)**: `sessions` dict grows with session count × duration, but only in `--format text` without `--stream`. In all other modes (`ndjson`, `csv`, `text --stream`) records are emitted and discarded — memory is O(1) per cycle.
 - **Output format**: `--format ndjson` or `--format csv` for machine-readable output. `text` format is human-readable only.
+- **CSV null representation**: absent metric fields are empty cells (Python `csv.DictWriter` default), not the string `"null"`. NDJSON uses JSON `null`. Consumers that rely on a single absent-value sentinel across formats must normalise at read time.

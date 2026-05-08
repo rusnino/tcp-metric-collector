@@ -101,23 +101,25 @@ ts,src,dst,cwnd,mss,ssthresh,unacked,rtt_ms,rttvar_ms,retrans_cur,retrans_total,
 1746518400.100,192.168.1.50:45231,192.168.1.100:80,10,1460,2147483647,0,1.234,0.617,0,0,84.7Mbps
 ```
 
+Absent fields in CSV are **empty cells** (standard RFC 4180 behavior via Python `csv.DictWriter`), not the string `"null"`. A consumer expecting `null` should treat empty cell as absent.
+
 Timestamps are real wall-clock `time.time()` values (Unix epoch, seconds).
 
 ## Collected Metrics
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `cwnd` | `int \| null` | Congestion window (segments) |
-| `mss` | `int \| null` | Maximum segment size (bytes) |
-| `ssthresh` | `int \| null` | Slow-start threshold |
-| `unacked` | `int \| null` | Unacknowledged segments |
-| `rtt_ms` | `float \| null` | Round-trip time (ms) |
-| `rttvar_ms` | `float \| null` | RTT variance (ms) — second component of `rtt:X/Y` from ss |
-| `retrans_cur` | `int \| null` | Current retransmissions |
-| `retrans_total` | `int \| null` | Total retransmissions |
-| `send` | `string \| null` | Estimated send rate (e.g. `"84.7Mbps"`) |
+| Field | Type | ndjson absent | csv absent |
+|-------|------|--------------|------------|
+| `cwnd` | `int` | `null` | empty cell |
+| `mss` | `int` | `null` | empty cell |
+| `ssthresh` | `int` | `null` | empty cell |
+| `unacked` | `int` | `null` | empty cell |
+| `rtt_ms` | `float` | `null` | empty cell |
+| `rttvar_ms` | `float` | `null` | empty cell |
+| `retrans_cur` | `int` | `null` | empty cell |
+| `retrans_total` | `int` | `null` | empty cell |
+| `send` | `string` | `null` | empty cell |
 
-`null` means the field was absent in the `ss` output for that sample (not zero).
+Absent = field not present in `ss` output for that sample. Distinct from `0` (present but zero).
 
 ## Diagnostics
 
