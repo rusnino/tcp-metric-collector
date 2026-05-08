@@ -39,7 +39,7 @@ except PackageNotFoundError:
     except Exception:
         _VERSION = "unknown"
 
-DEFAULT_SLEEP: float = 0.1
+DEFAULT_INTERVAL: float = 0.1  # seconds between polls
 POLL_TIMEOUT: float = 5.0   # netlink socket timeout per query
 SESSION_SEP = "|"
 
@@ -356,9 +356,12 @@ def _print_sessions(
 @click.option("--poll-timeout", type=click.FloatRange(min=0.1), default=POLL_TIMEOUT,
               show_default=True,
               help="Max seconds to wait for kernel netlink response per poll cycle.")
+@click.option("--interval", type=click.FloatRange(min=0.01), default=DEFAULT_INTERVAL,
+              show_default=True,
+              help="Seconds between polls (default 0.1 = 100ms).")
 def run(ip: str, duration: float | None, max_samples: int | None,
         output: str | None, stream: bool, fmt: str,
-        verbose: bool, debug: bool, poll_timeout: float) -> None:
+        verbose: bool, debug: bool, poll_timeout: float, interval: float) -> None:
     """Collect TCP metrics for all sessions to a destination IP address."""
     # Store flags in thread-local storage — safe for concurrent test invocations.
     _tls.verbose = verbose or debug
@@ -405,12 +408,12 @@ def run(ip: str, duration: float | None, max_samples: int | None,
 
     try:
         click.echo(
-            f"INFO: Collecting TCP metrics for {ip} every {DEFAULT_SLEEP}s."
+            f"INFO: Collecting TCP metrics for {ip} every {interval}s."
             " Press Ctrl+C to stop.",
             file=sys.stderr,
         )
-        _log(f"format={fmt} stream={stream} duration={duration} max_samples={max_samples}"
-             f" output={output!r} poll_timeout={poll_timeout}")
+        _log(f"format={fmt} stream={stream} interval={interval} duration={duration}"
+             f" max_samples={max_samples} output={output!r} poll_timeout={poll_timeout}")
 
         next_tick = monotonic()
         while not shutdown_ref[0]:
@@ -421,7 +424,7 @@ def run(ip: str, duration: float | None, max_samples: int | None,
                     _log(f"--duration {duration}s elapsed since first session, stopping")
                     break
 
-            next_tick += DEFAULT_SLEEP
+            next_tick += interval
 
             snapshot_time = time()  # capture before query — timestamp reflects sample start
             records = _collect_snapshot(ip, shutdown_ref, poll_timeout, _ds)
