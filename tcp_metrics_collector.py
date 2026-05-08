@@ -57,7 +57,7 @@ RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans):(\
 # Used only by _collect_snapshot() as a pre-filter (not by _parse_metrics_line).
 # If a new metric form is added to _parse_metrics_line, add a matching
 # alternation here so the line reaches the parser.
-_RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP + r"|\bsend \S")
+_RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP + r"|\bsend\s+\S")
 
 _verbose = False
 _debug = False
@@ -99,7 +99,7 @@ def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None
     String fields:  send  (unit varies: e.g. "84.7Mbps")
     None:           field absent in ss output
     """
-    normalized = re.sub(r"\bsend ", "send:", line, count=1) if "send " in line else line
+    normalized = re.sub(r"\bsend\s+", "send:", line, count=1) if re.search(r"\bsend\s", line) else line
     matches = list(re.finditer(RE_TCP_METRIC_PARAM_LOOKUP, normalized))
     if not matches:
         return None
