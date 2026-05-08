@@ -38,12 +38,18 @@ CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--str
 ## Running Tests
 
 ```bash
-uv run pytest          # all tests
-uv run pytest -v       # verbose
+uv run pytest               # all tests
+uv run pytest -v            # verbose
 uv run pytest tests/test_parser.py::TestParseSnapshot  # single class
+uv run pytest tests/test_cli.py   # CLI integration tests only
 ```
 
-Tests are pure unit tests — no real `ss` invocation, no network. Fixtures in `tests/fixtures/` simulate `ss -i` output for: single session, multiple sessions, CLOSING session, IPv6, missing wscale.
+Two test files:
+
+- `tests/test_parser.py` — unit tests for `is_valid_ipv4`, `_parse_session_line`, `_parse_metrics_line`, `_parse_snapshot`. No real `ss` invocation. Fixtures in `tests/fixtures/` simulate `ss -i` output.
+- `tests/test_cli.py` — CLI integration tests via `click.testing.CliRunner`. `_collect_snapshot` mocked with `unittest.mock.patch`. Covers input validation (exit codes), text/ndjson/csv output correctness, `--output` file errors, `ss` failure modes.
+
+Fixtures in `tests/fixtures/`: `ss_estab_single.txt`, `ss_multiple_sessions.txt`, `ss_closing.txt`, `ss_ipv6.txt`, `ss_no_wscale.txt`, `ss_no_metrics.txt`, `ss_send_only.txt`.
 
 ## Commit Policy
 

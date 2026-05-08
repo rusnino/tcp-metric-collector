@@ -32,7 +32,7 @@ CSV_FIELDS = (
     "send",
 )
 
-RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+\:\S+)\s+(\d+\.\d+\.\d+\.\d+\:\S+)$"
+RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+:\S+)\s+(\d+\.\d+\.\d+\.\d+:\S+)$"
 RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans)\:(\S+)"
 # Compiled fast-check: is a line a ss metrics line at all?
 # Matches standard key:value tokens OR "send VALUE" (space-separated in ss output).
@@ -64,11 +64,11 @@ def _parse_session_line(line: str) -> tuple[str, str] | None:
     if "tcp " not in line or "CLOSING" in line:
         _dbg(f"session line skipped: {line.strip()!r}")
         return None
-    lookup = re.findall(RE_TCP_SESSION_LOOKUP, line.strip())
-    if not lookup:
+    m = re.search(RE_TCP_SESSION_LOOKUP, line.strip())
+    if not m:
         _dbg(f"session regex no match: {line.strip()!r}")
         return None
-    return lookup[0][0], lookup[0][1]
+    return m.group(1), m.group(2)
 
 
 def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None:
@@ -192,7 +192,6 @@ def _emit_record(
             for k, v in metrics.items()
         )
         out.write(f"{ts:.3f} [{label}] {fields}\n")
-        out.flush()
 
 
 def _parse_snapshot(
@@ -269,7 +268,7 @@ def run(ip: str, duration: float | None, max_samples: int | None,
         output: str | None, stream: bool, fmt: str,
         verbose: bool, debug: bool) -> None:
     """Collect TCP metrics for all sessions to a destination IPv4 address."""
-    global _verbose, _debug
+    global _verbose, _debug  # reset each invocation — safe for tests calling run() multiple times
     _verbose = verbose or debug
     _debug = debug
 
@@ -321,9 +320,12 @@ def run(ip: str, duration: float | None, max_samples: int | None,
             sample_count += 1
 
             if _verbose:
-                total_records = sum(len(v) for v in sessions.values())
-                _log(f"sample {sample_count}: {len(lines)} lines, "
-                     f"{len(sessions)} session(s), {total_records} total records")
+                if fmt == "text" and not stream:
+                    total_records = sum(len(v) for v in sessions.values())
+                    _log(f"sample {sample_count}: {len(lines)} lines, "
+                         f"{len(sessions)} session(s), {total_records} buffered records")
+                else:
+                    _log(f"sample {sample_count}: {len(lines)} lines emitted")
 
             if max_samples is not None and sample_count >= max_samples:
                 _log(f"--max-samples {max_samples} reached, stopping")
