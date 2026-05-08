@@ -127,6 +127,23 @@ class TestTextFormat:
             result = runner.invoke(run, ["-a", "192.168.1.100"])
         assert result.exit_code == 0
 
+    def test_stream_emits_per_sample(self, runner):
+        with patch("tcp_metrics_collector._collect_snapshot", side_effect=_mock_one_shot(_SINGLE_SESSION_LINES)):
+            result = runner.invoke(run, ["-a", "192.168.1.100", "--stream"])
+        assert result.exit_code == 0
+        data_lines = [l for l in result.output.splitlines() if "192.168.1" in l]
+        assert len(data_lines) >= 1
+
+    def test_stream_to_file_written_per_sample(self, runner, tmp_path):
+        out_file = tmp_path / "stream.txt"
+        with patch("tcp_metrics_collector._collect_snapshot", side_effect=_mock_one_shot(_SINGLE_SESSION_LINES)):
+            result = runner.invoke(run, [
+                "-a", "192.168.1.100", "--stream", "--output", str(out_file),
+            ])
+        assert result.exit_code == 0
+        content = out_file.read_text()
+        assert "192.168.1.50:45231" in content
+
     def test_max_samples_1_stops_after_one(self, runner):
         call_count = []
 

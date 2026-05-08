@@ -192,6 +192,7 @@ def _emit_record(
             for k, v in metrics.items()
         )
         out.write(f"{ts:.3f} [{label}] {fields}\n")
+        out.flush()  # text --stream must flush per-record for pipe/file consumers
 
 
 def _parse_snapshot(
