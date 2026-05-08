@@ -106,9 +106,9 @@ Invoked as `ss -H -n -i dst <ip>`:
 - `-i` — show internal TCP info (the metrics we collect)
 - `dst <ip>` — filter to sessions with this destination address
 
-### 4. Real wall-clock timestamps
+### 4. Real wall-clock timestamps — captured before ss runs
 
-Each sample stores `time()` at collection time. Accurate for correlation with external events.
+`snapshot_time = time()` is captured immediately before `_collect_snapshot()` is called, so the timestamp reflects when the sample was intended to be taken, not when ss finished. On a loaded host ss can take 20–80ms; capturing after the call would timestamp the end of collection, making the time-series appear jittery when ss runtime varies. Capturing before gives a consistent "sample start" anchor aligned with the monotonic tick scheduler.
 
 ### 5. IPv4-only validation via `is_valid_ipv4()`
 

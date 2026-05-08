@@ -319,11 +319,12 @@ def run(ip: str, duration: float | None, max_samples: int | None,
         while not shutdown_ref[0]:
             next_tick += DEFAULT_SLEEP
 
+            snapshot_time = time()  # capture before ss runs — timestamp reflects sample start
             lines = _collect_snapshot(ip, shutdown_ref)
             if lines is None:
                 break
 
-            _parse_snapshot(lines, time(), sessions, fmt, stream, out, csv_writer)
+            _parse_snapshot(lines, snapshot_time, sessions, fmt, stream, out, csv_writer)
             sample_count += 1
 
             if _verbose:
