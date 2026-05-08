@@ -7,12 +7,12 @@
 #
 
 import csv
-import concurrent.futures
 import ipaddress
 import json
 import re
 import signal
 import sys
+import threading
 from collections import defaultdict
 from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from socket import AF_INET, AF_INET6
@@ -149,37 +149,45 @@ def _collect_snapshot(
 
     family = AF_INET6 if ":" in ip else AF_INET
 
-    def _query() -> tuple:
-        with DiagSocket() as ds:
-            ds.bind()
-            return ds.get_sock_stats(
-                family=family,
-                states=SS_CONN,
-                extensions=_INET_DIAG_INFO_EXT,
-            )
+    result_box: list = []
+    error_box: list[Exception] = []
 
-    ex = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    fut = ex.submit(_query)
-    try:
-        sockets = fut.result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
-        # Do not wait for the hung thread — kernel netlink calls cannot be
-        # interrupted, so we abandon the thread and continue.
-        ex.shutdown(wait=False)
+    def _query() -> None:
+        try:
+            with DiagSocket() as ds:
+                ds.bind()
+                result_box.append(ds.get_sock_stats(
+                    family=family,
+                    states=SS_CONN,
+                    extensions=_INET_DIAG_INFO_EXT,
+                ))
+        except Exception as exc:  # noqa: BLE001
+            error_box.append(exc)
+
+    # daemon=True: if the kernel/netlink call hangs and we timeout, the thread
+    # is abandoned. As a daemon it won't prevent process exit and won't
+    # accumulate as a live non-daemon thread across repeated poll cycles.
+    worker = threading.Thread(target=_query, daemon=True)
+    worker.start()
+    worker.join(timeout=timeout)
+
+    if worker.is_alive():
+        # Thread still blocked in get_sock_stats — cannot be interrupted.
+        # Abandon it (daemon thread exits when the process does).
         if shutdown_ref[0]:
             return None
         raise click.ClickException(
             f"inet_diag query did not respond within {timeout}s; "
             "possible kernel/netlink hang"
         )
-    except OSError as exc:
-        ex.shutdown(wait=False)
-        raise click.ClickException(f"inet_diag query failed: {exc}")
-    except Exception as exc:
-        ex.shutdown(wait=False)
+
+    if error_box:
+        exc = error_box[0]
+        if isinstance(exc, OSError):
+            raise click.ClickException(f"inet_diag query failed: {exc}")
         raise click.ClickException(f"inet_diag error: {exc}")
-    else:
-        ex.shutdown(wait=False)
+
+    sockets = result_box[0] if result_box else ()
 
     if shutdown_ref[0]:
         _dbg("snapshot skipped — shutdown signalled during netlink query")
