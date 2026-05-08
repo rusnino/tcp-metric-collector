@@ -176,7 +176,7 @@ Previously `_parse_metrics_line()` returned `None` if `"wscale"` was not in the 
 The contract is: a line is a metrics line if it matches `_RE_HAS_METRIC`:
 
 ```python
-_RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP + r"|\bsend \S")
+_RE_HAS_METRIC = re.compile(RE_TCP_METRIC_PARAM_LOOKUP + r"|\bsend\s+\S")
 ```
 
 Two forms are accepted:
