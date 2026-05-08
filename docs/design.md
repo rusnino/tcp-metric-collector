@@ -84,8 +84,10 @@ All modes write to stdout by default; `--output FILE` redirects to a file.
 
 Loop exits when any of these is true:
 - `shutdown` flag set (SIGINT / SIGTERM)
-- `--max-samples N` reached
-- `--duration N` elapsed
+- `--max-samples N` reached (counted from first sample regardless of sessions)
+- `--duration N` elapsed since first sample with ≥1 session
+
+**`--duration` countdown semantics:** `duration_start_mono` is `None` until the first `_collect_snapshot()` call that returns a non-empty list (at least one session pair). Until then the tool polls indefinitely. This lets users start the collector before initiating traffic — the window starts when the first TCP session is actually observed, not when the command is invoked.
 
 ## Key Design Decisions
 

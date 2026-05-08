@@ -290,7 +290,8 @@ def _print_sessions(
 @click.version_option(version=_VERSION, prog_name="tcp-metric-collector")
 @click.option("-a", "ip", required=True, help="Destination IPv4 address to monitor")
 @click.option("--duration", type=click.FloatRange(min=0.001), default=None,
-              help="Stop collecting after N seconds (must be > 0).")
+              help="Stop collecting N seconds after the first TCP session is seen (must be > 0)."
+                   " The tool waits indefinitely until traffic appears.")
 @click.option("--max-samples", type=click.IntRange(min=1), default=None,
               help="Stop collecting after N snapshots (must be >= 1).")
 @click.option("--output", type=click.Path(), default=None,
@@ -323,7 +324,9 @@ def run(ip: str, duration: float | None, max_samples: int | None,
     # without needing a nonlocal closure per call.
     shutdown_ref: list[bool] = [False]
     sample_count = 0
-    start_mono = monotonic()
+    # duration countdown starts from first sample with ≥1 session, not from
+    # program start — so the tool waits indefinitely until traffic appears.
+    duration_start_mono: float | None = None
 
     def signal_handler(*_) -> None:
         shutdown_ref[0] = True
@@ -353,11 +356,12 @@ def run(ip: str, duration: float | None, max_samples: int | None,
 
         next_tick = monotonic()
         while not shutdown_ref[0]:
-            # Check duration before starting a new collection so we never collect
-            # past the deadline even if ss is slow or the previous sample overran.
-            if duration is not None and monotonic() - start_mono >= duration:
-                _log(f"--duration {duration}s reached, stopping")
-                break
+            # Duration check before collection — never over-collect past deadline.
+            # Only active after first session found (duration_start_mono set below).
+            if duration is not None and duration_start_mono is not None:
+                if monotonic() - duration_start_mono >= duration:
+                    _log(f"--duration {duration}s elapsed since first session, stopping")
+                    break
 
             next_tick += DEFAULT_SLEEP
 
@@ -368,6 +372,11 @@ def run(ip: str, duration: float | None, max_samples: int | None,
 
             _parse_snapshot(lines, snapshot_time, sessions, fmt, stream, out, csv_writer)
             sample_count += 1
+
+            # Start duration countdown on first sample that contains a session.
+            if duration is not None and duration_start_mono is None and lines:
+                duration_start_mono = monotonic()
+                _log("first session found — duration countdown started")
 
             if _verbose:
                 if fmt == "text" and not stream:

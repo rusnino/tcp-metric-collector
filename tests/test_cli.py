@@ -180,9 +180,8 @@ class TestTextFormat:
         assert len(call_count) == 1
 
     def test_duration_stops_collection(self, runner):
-        # --duration 0.001 (minimum): duration check fires at loop top before second
-        # collection, so exactly one sample is collected. Previously the check ran
-        # after collect+parse, allowing an extra sample past the deadline.
+        # --duration 0.001: countdown starts on first session, check fires before
+        # second collection after sleep(~100ms) elapses. Exactly one sample.
         call_count = []
 
         def _collect(ip, shutdown_ref, timeout=None):
@@ -193,6 +192,26 @@ class TestTextFormat:
             result = runner.invoke(run, ["-a", "192.168.1.100", "--duration", "0.001"])
         assert result.exit_code == 0
         assert len(call_count) == 1
+
+    def test_duration_waits_for_first_session(self, runner):
+        # If early samples are empty (no sessions yet), duration countdown must NOT start.
+        # Tool keeps polling until a session appears, then starts timing.
+        calls = []
+
+        def _collect(ip, shutdown_ref, timeout=None):
+            calls.append(1)
+            if len(calls) < 3:
+                return []                    # empty — no sessions yet
+            shutdown_ref[0] = True          # stop after 3rd call
+            return _SINGLE_SESSION_LINES    # first real session
+
+        with patch("tcp_metrics_collector._collect_snapshot", side_effect=_collect):
+            result = runner.invoke(run, ["-a", "192.168.1.100", "--duration", "60"])
+        assert result.exit_code == 0
+        # All 3 calls happened — tool did not stop early due to empty samples
+        assert len(calls) == 3
+        # Session output present — the real session was recorded
+        assert "START TCP SESSION" in result.output
 
 
 # ---------------------------------------------------------------------------

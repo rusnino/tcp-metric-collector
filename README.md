@@ -37,7 +37,7 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 | Option | Description |
 |--------|-------------|
 | `-a IP` | Destination IPv4 address to monitor (required) |
-| `--duration N` | Stop after N seconds (N > 0) |
+| `--duration N` | Stop N seconds after the **first TCP session** is seen (N > 0). Waits indefinitely until traffic appears. |
 | `--max-samples N` | Stop after N snapshots (N ≥ 1) |
 | `--output FILE` | Write results to file instead of stdout |
 | `--stream` | (text format) Print each metric line as collected |
@@ -53,7 +53,7 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 # Basic — Ctrl+C to stop, results printed on exit
 uv run tcp_metrics_collector.py -a 192.168.1.100
 
-# Collect for 30 seconds then exit
+# Collect for 30 seconds after first session appears (waits for traffic)
 uv run tcp_metrics_collector.py -a 192.168.1.100 --duration 30
 
 # Cap samples and save as NDJSON
