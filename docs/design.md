@@ -100,6 +100,12 @@ Current design parses each snapshot immediately in the collection loop. Only `(t
 
 `ss` surfaces extended TCP info (`-i` flag: internal kernel socket stats — cwnd, rtt, etc.) not available in `/proc/net/tcp`. Requires `iproute2`.
 
+Invoked as `ss -H -n -i dst <ip>`:
+- `-H` — suppress header line (avoids filtering it out in the adjacency pass)
+- `-n` — numeric output; no port-to-service-name resolution (faster, deterministic)
+- `-i` — show internal TCP info (the metrics we collect)
+- `dst <ip>` — filter to sessions with this destination address
+
 ### 4. Real wall-clock timestamps
 
 Each sample stores `time()` at collection time. Accurate for correlation with external events.

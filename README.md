@@ -35,13 +35,14 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 | Option | Description |
 |--------|-------------|
 | `-a IP` | Destination IPv4 address to monitor (required) |
-| `--duration N` | Stop after N seconds |
-| `--max-samples N` | Stop after N snapshots |
+| `--duration N` | Stop after N seconds (N > 0) |
+| `--max-samples N` | Stop after N snapshots (N ≥ 1) |
 | `--output FILE` | Write results to file instead of stdout |
 | `--stream` | (text format) Print each metric line as collected |
 | `--format text\|ndjson\|csv` | Output format (default: `text`) |
 | `-v, --verbose` | Log sample count and session count to stderr each cycle |
 | `--debug` | Log detailed parse events to stderr (implies `--verbose`) |
+| `--version` | Print version and exit |
 
 ## Examples
 

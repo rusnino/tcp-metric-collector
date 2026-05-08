@@ -3,8 +3,13 @@
 import csv
 import io
 import json
+import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+from click.testing import CliRunner
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -13,10 +18,6 @@ else:
         import tomllib  # type: ignore[no-redef]
     except ImportError:
         import tomli as tomllib  # type: ignore[no-redef]
-from unittest.mock import patch
-
-import pytest
-from click.testing import CliRunner
 
 from tcp_metrics_collector import _VERSION, run
 
@@ -39,13 +40,14 @@ _TWO_SESSION_LINES = [
 
 def _mock_one_shot(lines: list[str]):
     """Return a _collect_snapshot mock that yields lines once then signals shutdown."""
-    calls = []
+    fired = False
 
     def _collect(ip, shutdown_ref):
-        if calls:
+        nonlocal fired
+        if fired:
             shutdown_ref[0] = True
             return None
-        calls.append(1)
+        fired = True
         return lines
 
     return _collect
@@ -58,7 +60,7 @@ def runner():
 
 def _json_lines(output: str) -> list[str]:
     """Extract only JSON object lines from mixed output (INFO banner etc.)."""
-    return [l for l in output.splitlines() if l.startswith("{")]
+    return [line for line in output.splitlines() if line.startswith("{")]
 
 
 def _csv_output(output: str) -> str:
@@ -67,8 +69,8 @@ def _csv_output(output: str) -> str:
     CSV header starts with 'ts,'; data rows start with a Unix timestamp digit.
     INFO/DEBUG lines are excluded.
     """
-    kept = [l for l in output.splitlines()
-            if l.startswith("ts,") or (l and l[0].isdigit())]
+    kept = [line for line in output.splitlines()
+            if line.startswith("ts,") or (line and line[0].isdigit())]
     return "\n".join(kept)
 
 
@@ -176,6 +178,12 @@ class TestTextFormat:
             result = runner.invoke(run, ["-a", "192.168.1.100", "--max-samples", "1"])
         assert result.exit_code == 0
         assert len(call_count) == 1
+
+    def test_duration_stops_collection(self, runner):
+        # --duration 0.001 (minimum) should cause the loop to exit after one sample
+        with patch("tcp_metrics_collector._collect_snapshot", side_effect=_mock_one_shot(_SINGLE_SESSION_LINES)):
+            result = runner.invoke(run, ["-a", "192.168.1.100", "--duration", "0.001"])
+        assert result.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -296,21 +304,17 @@ class TestOutputFile:
 # ---------------------------------------------------------------------------
 
 class TestSsFailure:
+    _PERM_DENIED = subprocess.CompletedProcess(
+        args=["ss"], returncode=1, stdout="", stderr="permission denied"
+    )
+
     def test_ss_nonzero_exits_1(self, runner):
-        import subprocess
-        mock_result = subprocess.CompletedProcess(
-            args=["ss"], returncode=1, stdout="", stderr="permission denied"
-        )
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("subprocess.run", return_value=self._PERM_DENIED):
             result = runner.invoke(run, ["-a", "192.168.1.100"])
         assert result.exit_code == 1
 
     def test_ss_error_message_on_stderr(self, runner):
-        import subprocess
-        mock_result = subprocess.CompletedProcess(
-            args=["ss"], returncode=1, stdout="", stderr="permission denied"
-        )
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("subprocess.run", return_value=self._PERM_DENIED):
             result = runner.invoke(run, ["-a", "192.168.1.100"], catch_exceptions=False)
         assert "permission denied" in result.output
 

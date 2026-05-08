@@ -18,12 +18,12 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from time import monotonic, sleep, time
 from typing import TextIO
 
+import click
+
 try:
     _VERSION = _pkg_version("tcp-metric-collector")
 except PackageNotFoundError:
     _VERSION = "unknown"  # running as bare script without package install
-
-import click
 
 DEFAULT_SLEEP: float = 0.1
 SESSION_SEP = "|"
@@ -39,7 +39,7 @@ CSV_FIELDS = (
 )
 
 RE_TCP_SESSION_LOOKUP = r"tcp\s+\S+\s+\d+\s+\d+\s+(\d+\.\d+\.\d+\.\d+:\S+)\s+(\d+\.\d+\.\d+\.\d+:\S+)$"
-RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans)\:(\S+)"
+RE_TCP_METRIC_PARAM_LOOKUP = r"\b(cwnd|rtt|mss|ssthresh|send|unacked|retrans):(\S+)"
 # Compiled fast-check: is a line a ss metrics line at all?
 # Matches standard key:value tokens OR "send VALUE" (space-separated in ss output).
 # Must stay aligned with _parse_metrics_line normalization.
