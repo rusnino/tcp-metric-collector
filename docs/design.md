@@ -189,11 +189,13 @@ Two forms are accepted:
 
 The two components are kept semantically consistent: `_RE_HAS_METRIC` detects both the colon-form and the raw space-form so the pre-filter accepts every line the parser can handle. If a new metric form is added to `_parse_metrics_line`, `_RE_HAS_METRIC` must be updated accordingly. `wscale` is no longer special-cased anywhere.
 
-### 14. `SS_TIMEOUT` — hard limit on ss execution time
+### 14. `SS_TIMEOUT` / `--ss-timeout` — configurable ss execution limit
 
-`subprocess.run(["ss", ...])` previously had no timeout. If ss hung (kernel/netlink issue, overloaded host), the collector blocked indefinitely. `--duration` and `--max-samples` checks run after `_collect_snapshot()` returns, so they cannot interrupt a stalled call.
+`subprocess.run(["ss", ...])` previously had no timeout. If ss hung (kernel/netlink issue, overloaded host), the collector blocked indefinitely.
 
-`SS_TIMEOUT = 5.0` (seconds) passed to `subprocess.run(timeout=...)`. On timeout, `subprocess.TimeoutExpired` is caught and raised as `click.ClickException`. 5 seconds is generous (normal ss completes in <100ms) while catching true hangs.
+`SS_TIMEOUT = 5.0` is the default. Exposed as `--ss-timeout N` (min 0.1s) so users on very loaded or slow hosts can increase it without false timeout errors. The value is passed through `run()` → `_collect_snapshot(timeout=ss_timeout)`.
+
+On `TimeoutExpired`: if `shutdown_ref` is set (Ctrl+C while ss hung), returns `None` (clean exit, buffered results printed). Otherwise raises `click.ClickException`.
 
 ### 15. No `sys.exit()` in `run()` — idiomatic Click
 

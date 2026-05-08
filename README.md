@@ -44,6 +44,7 @@ Press `Ctrl+C` or send `SIGTERM` to stop collection and print results.
 | `--format text\|ndjson\|csv` | Output format (default: `text`) |
 | `-v, --verbose` | Log sample count and session count to stderr each cycle |
 | `--debug` | Log detailed parse events to stderr (implies `--verbose`) |
+| `--ss-timeout N` | Max seconds to wait for ss per sample (default: `5.0`, min: `0.1`) |
 | `--version` | Print version and exit (reads `pyproject.toml` in bare-script mode) |
 
 ## Examples

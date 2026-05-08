@@ -33,11 +33,11 @@ Single-file script (`tcp_metrics_collector.py`). Key functions:
 
 Collection and parsing merged: each snapshot parsed immediately in the loop. `sessions` stores `(timestamp, dict)` tuples — not pre-serialised strings. Raw `ss` output never retained beyond current cycle.
 
-CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`, `--verbose`, `--debug`, `--version`
+CLI options: `-a IP`, `--duration N`, `--max-samples N`, `--output FILE`, `--stream`, `--format text|ndjson|csv`, `--verbose`, `--debug`, `--ss-timeout N`, `--version`
 
 Key constants:
 - `DEFAULT_SLEEP = 0.1` — poll interval (seconds); monotonic tick scheduler keeps this exact
-- `SS_TIMEOUT = 5.0` — max seconds to wait for ss before raising ClickException
+- `SS_TIMEOUT = 5.0` — default max seconds to wait for ss; overridable via `--ss-timeout`
 - `SESSION_SEP = "|"` — session key separator (safe: cannot appear in IPv4:port)
 
 `snapshot_time = time()` captured before `_collect_snapshot()` — timestamp is sample start, not ss completion.

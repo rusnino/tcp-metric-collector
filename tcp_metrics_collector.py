@@ -150,14 +150,16 @@ def _parse_metrics_line(line: str) -> dict[str, int | float | str | None] | None
     return result
 
 
-def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
+def _collect_snapshot(
+    ip: str, shutdown_ref: list[bool], timeout: float = SS_TIMEOUT
+) -> list[str] | None:
     """Run ss and return filtered lines. Returns None if interrupted by signal."""
     try:
         result = subprocess.run(
             ["ss", "-H", "-n", "-i", "dst", ip],
             capture_output=True,
             text=True,
-            timeout=SS_TIMEOUT,
+            timeout=timeout,
         )
     except FileNotFoundError:
         raise click.ClickException("ss command not found; install iproute2")
@@ -167,7 +169,7 @@ def _collect_snapshot(ip: str, shutdown_ref: list[bool]) -> list[str] | None:
             # buffered text results are still printed before exit.
             return None
         raise click.ClickException(
-            f"ss did not respond within {SS_TIMEOUT}s; "
+            f"ss did not respond within {timeout}s; "
             "possible kernel/netlink hang or overloaded host"
         )
 
@@ -296,9 +298,12 @@ def _print_sessions(
               help="Log collection progress to stderr (sample count, session count).")
 @click.option("--debug", is_flag=True, default=False,
               help="Log detailed parse events to stderr (implies --verbose).")
+@click.option("--ss-timeout", type=click.FloatRange(min=0.1), default=SS_TIMEOUT,
+              show_default=True,
+              help="Max seconds to wait for ss before raising an error.")
 def run(ip: str, duration: float | None, max_samples: int | None,
         output: str | None, stream: bool, fmt: str,
-        verbose: bool, debug: bool) -> None:
+        verbose: bool, debug: bool, ss_timeout: float) -> None:
     """Collect TCP metrics for all sessions to a destination IPv4 address."""
     global _verbose, _debug  # reset each invocation — safe for tests calling run() multiple times
     _verbose = verbose or debug
@@ -338,14 +343,14 @@ def run(ip: str, duration: float | None, max_samples: int | None,
             file=sys.stderr,
         )
         _log(f"format={fmt} stream={stream} duration={duration} max_samples={max_samples}"
-             f" output={output!r}")
+             f" output={output!r} ss_timeout={ss_timeout}")
 
         next_tick = monotonic()
         while not shutdown_ref[0]:
             next_tick += DEFAULT_SLEEP
 
             snapshot_time = time()  # capture before ss runs — timestamp reflects sample start
-            lines = _collect_snapshot(ip, shutdown_ref)
+            lines = _collect_snapshot(ip, shutdown_ref, ss_timeout)
             if lines is None:
                 break
 

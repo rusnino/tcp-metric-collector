@@ -42,7 +42,7 @@ def _mock_one_shot(lines: list[str]):
     """Return a _collect_snapshot mock that yields lines once then signals shutdown."""
     fired = False
 
-    def _collect(ip, shutdown_ref):
+    def _collect(ip, shutdown_ref, timeout=None):
         nonlocal fired
         if fired:
             shutdown_ref[0] = True
@@ -170,7 +170,7 @@ class TestTextFormat:
     def test_max_samples_1_stops_after_one(self, runner):
         call_count = []
 
-        def _collect(ip, shutdown_ref):
+        def _collect(ip, shutdown_ref, timeout=None):
             call_count.append(1)
             return _SINGLE_SESSION_LINES
 
